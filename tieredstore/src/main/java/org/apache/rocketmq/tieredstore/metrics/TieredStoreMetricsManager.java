@@ -16,6 +16,7 @@
  */
 package org.apache.rocketmq.tieredstore.metrics;
 
+import com.github.benmanes.caffeine.cache.Policy;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.common.AttributesBuilder;
 import io.opentelemetry.api.metrics.LongCounter;
@@ -32,23 +33,25 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Supplier;
 import org.apache.rocketmq.common.Pair;
 import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.common.metrics.NopLongCounter;
 import org.apache.rocketmq.common.metrics.NopLongHistogram;
 import org.apache.rocketmq.common.metrics.NopObservableLongGauge;
+import org.apache.rocketmq.logging.org.slf4j.Logger;
+import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.store.MessageStore;
-import org.apache.rocketmq.tieredstore.MessageStoreConfig;
+import org.apache.rocketmq.tieredstore.TieredMessageFetcher;
 import org.apache.rocketmq.tieredstore.common.FileSegmentType;
-import org.apache.rocketmq.tieredstore.core.MessageStoreFetcher;
-import org.apache.rocketmq.tieredstore.core.MessageStoreFetcherImpl;
-import org.apache.rocketmq.tieredstore.file.FlatFileStore;
-import org.apache.rocketmq.tieredstore.file.FlatMessageFile;
-import org.apache.rocketmq.tieredstore.metadata.MetadataStore;
-import org.apache.rocketmq.tieredstore.util.MessageStoreUtil;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.rocketmq.tieredstore.common.MessageCacheKey;
+import org.apache.rocketmq.tieredstore.common.SelectBufferResultWrapper;
+import org.apache.rocketmq.tieredstore.common.TieredMessageStoreConfig;
+import org.apache.rocketmq.tieredstore.file.CompositeQueueFlatFile;
+import org.apache.rocketmq.tieredstore.file.TieredFlatFileManager;
+import org.apache.rocketmq.tieredstore.metadata.TieredMetadataStore;
+import org.apache.rocketmq.tieredstore.util.TieredStoreUtil;
 
 import static org.apache.rocketmq.store.metrics.DefaultStoreMetricsConstant.GAUGE_STORAGE_SIZE;
 import static org.apache.rocketmq.store.metrics.DefaultStoreMetricsConstant.LABEL_STORAGE_MEDIUM;
@@ -74,7 +77,7 @@ import static org.apache.rocketmq.tieredstore.metrics.TieredStoreMetricsConstant
 
 public class TieredStoreMetricsManager {
 
-    private static final Logger log = LoggerFactory.getLogger(MessageStoreUtil.TIERED_STORE_LOGGER_NAME);
+    private static final Logger logger = LoggerFactory.getLogger(TieredStoreUtil.TIERED_STORE_LOGGER_NAME);
     public static Supplier<AttributesBuilder> attributesBuilderSupplier;
     private static String storageMedium = STORAGE_MEDIUM_BLOB;
 
@@ -127,7 +130,7 @@ public class TieredStoreMetricsManager {
             .build();
 
         ViewBuilder bufferSizeViewBuilder = View.builder()
-            .setAggregation(Aggregation.explicitBucketHistogram(Arrays.asList(1d * MessageStoreUtil.KB, 10d * MessageStoreUtil.KB, 100d * MessageStoreUtil.KB, 1d * MessageStoreUtil.MB, 10d * MessageStoreUtil.MB, 32d * MessageStoreUtil.MB, 50d * MessageStoreUtil.MB, 100d * MessageStoreUtil.MB)))
+            .setAggregation(Aggregation.explicitBucketHistogram(Arrays.asList(1d * TieredStoreUtil.KB, 10d * TieredStoreUtil.KB, 100d * TieredStoreUtil.KB, 1d * TieredStoreUtil.MB, 10d * TieredStoreUtil.MB, 32d * TieredStoreUtil.MB, 50d * TieredStoreUtil.MB, 100d * TieredStoreUtil.MB)))
             .setDescription("tiered_store_buffer_size_view");
 
         res.add(new Pair<>(rpcLatencySelector, rpcLatencyViewBuilder));
@@ -142,9 +145,7 @@ public class TieredStoreMetricsManager {
     }
 
     public static void init(Meter meter, Supplier<AttributesBuilder> attributesBuilderSupplier,
-        MessageStoreConfig storeConfig, MessageStoreFetcher fetcher,
-        FlatFileStore flatFileStore, MessageStore next) {
-
+        TieredMessageStoreConfig storeConfig, TieredMessageFetcher fetcher, MessageStore next) {
         TieredStoreMetricsManager.attributesBuilderSupplier = attributesBuilderSupplier;
 
         apiLatency = meter.histogramBuilder(HISTOGRAM_API_LATENCY)
@@ -175,7 +176,8 @@ public class TieredStoreMetricsManager {
             .setDescription("Tiered store dispatch behind message count")
             .ofLongs()
             .buildWithCallback(measurement -> {
-                for (FlatMessageFile flatFile : flatFileStore.deepCopyFlatFileToList()) {
+                for (CompositeQueueFlatFile flatFile :
+                    TieredFlatFileManager.getInstance(storeConfig).deepCopyFlatFileToList()) {
 
                     MessageQueue mq = flatFile.getMessageQueue();
                     long maxOffset = next.getMaxOffsetInQueue(mq.getTopic(), mq.getQueueId());
@@ -189,7 +191,7 @@ public class TieredStoreMetricsManager {
                         .put(LABEL_QUEUE_ID, mq.getQueueId())
                         .put(LABEL_FILE_TYPE, FileSegmentType.COMMIT_LOG.name().toLowerCase())
                         .build();
-
+                    measurement.record(Math.max(maxOffset - flatFile.getDispatchOffset(), 0), commitLogAttributes);
                     Attributes consumeQueueAttributes = newAttributesBuilder()
                         .put(LABEL_TOPIC, mq.getTopic())
                         .put(LABEL_QUEUE_ID, mq.getQueueId())
@@ -204,7 +206,8 @@ public class TieredStoreMetricsManager {
             .setUnit("seconds")
             .ofLongs()
             .buildWithCallback(measurement -> {
-                for (FlatMessageFile flatFile : flatFileStore.deepCopyFlatFileToList()) {
+                for (CompositeQueueFlatFile flatFile :
+                    TieredFlatFileManager.getInstance(storeConfig).deepCopyFlatFileToList()) {
 
                     MessageQueue mq = flatFile.getMessageQueue();
                     long maxOffset = next.getMaxOffsetInQueue(mq.getTopic(), mq.getQueueId());
@@ -218,6 +221,12 @@ public class TieredStoreMetricsManager {
                         .put(LABEL_QUEUE_ID, mq.getQueueId())
                         .put(LABEL_FILE_TYPE, FileSegmentType.COMMIT_LOG.name().toLowerCase())
                         .build();
+                    long commitLogDispatchLatency = next.getMessageStoreTimeStamp(mq.getTopic(), mq.getQueueId(), flatFile.getDispatchOffset());
+                    if (maxOffset <= flatFile.getDispatchOffset() || commitLogDispatchLatency < 0) {
+                        measurement.record(0, commitLogAttributes);
+                    } else {
+                        measurement.record(System.currentTimeMillis() - commitLogDispatchLatency, commitLogAttributes);
+                    }
 
                     Attributes consumeQueueAttributes = newAttributesBuilder()
                         .put(LABEL_TOPIC, mq.getTopic())
@@ -249,22 +258,15 @@ public class TieredStoreMetricsManager {
         cacheCount = meter.gaugeBuilder(GAUGE_CACHE_COUNT)
             .setDescription("Tiered store cache message count")
             .ofLongs()
-            .buildWithCallback(measurement -> {
-                if (fetcher instanceof MessageStoreFetcherImpl) {
-                    long count = ((MessageStoreFetcherImpl) fetcher).getFetcherCache().stats().loadCount();
-                    measurement.record(count, newAttributesBuilder().build());
-                }
-            });
+            .buildWithCallback(measurement -> measurement.record(fetcher.getMessageCache().estimatedSize(), newAttributesBuilder().build()));
 
         cacheBytes = meter.gaugeBuilder(GAUGE_CACHE_BYTES)
             .setDescription("Tiered store cache message bytes")
             .setUnit("bytes")
             .ofLongs()
             .buildWithCallback(measurement -> {
-                if (fetcher instanceof MessageStoreFetcherImpl) {
-                    long count = ((MessageStoreFetcherImpl) fetcher).getFetcherCache().estimatedSize();
-                    measurement.record(count, newAttributesBuilder().build());
-                }
+                Optional<Policy.Eviction<MessageCacheKey, SelectBufferResultWrapper>> eviction = fetcher.getMessageCache().policy().eviction();
+                eviction.ifPresent(resultEviction -> measurement.record(resultEviction.weightedSize().orElse(0), newAttributesBuilder().build()));
             });
 
         cacheAccess = meter.counterBuilder(COUNTER_CACHE_ACCESS)
@@ -282,7 +284,7 @@ public class TieredStoreMetricsManager {
             .buildWithCallback(measurement -> {
                 Map<String, Map<FileSegmentType, Long>> topicFileSizeMap = new HashMap<>();
                 try {
-                    MetadataStore metadataStore = flatFileStore.getMetadataStore();
+                    TieredMetadataStore metadataStore = TieredStoreUtil.getMetadataStore(storeConfig);
                     metadataStore.iterateFileSegment(fileSegment -> {
                         Map<FileSegmentType, Long> subMap =
                             topicFileSizeMap.computeIfAbsent(fileSegment.getPath(), k -> new HashMap<>());
@@ -292,7 +294,7 @@ public class TieredStoreMetricsManager {
                         subMap.put(fileSegmentType, size + fileSegment.getSize());
                     });
                 } catch (Exception e) {
-                    log.error("Failed to get storage size", e);
+                    logger.error("Failed to get storage size", e);
                 }
                 topicFileSizeMap.forEach((topic, subMap) -> {
                     subMap.forEach((fileSegmentType, size) -> {
@@ -310,8 +312,8 @@ public class TieredStoreMetricsManager {
             .setUnit("milliseconds")
             .ofLongs()
             .buildWithCallback(measurement -> {
-                for (FlatMessageFile flatFile : flatFileStore.deepCopyFlatFileToList()) {
-                    long timestamp = flatFile.getMinStoreTimestamp();
+                for (CompositeQueueFlatFile flatFile : TieredFlatFileManager.getInstance(storeConfig).deepCopyFlatFileToList()) {
+                    long timestamp = flatFile.getCommitLogBeginTimestamp();
                     if (timestamp > 0) {
                         MessageQueue mq = flatFile.getMessageQueue();
                         Attributes attributes = newAttributesBuilder()

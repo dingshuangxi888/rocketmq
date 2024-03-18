@@ -28,12 +28,13 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.apache.rocketmq.common.ThreadFactoryImpl;
-import org.apache.rocketmq.tieredstore.MessageStoreConfig;
+import org.apache.rocketmq.tieredstore.TieredStoreTestUtil;
 import org.apache.rocketmq.tieredstore.common.AppendResult;
 import org.apache.rocketmq.tieredstore.common.FileSegmentType;
-import org.apache.rocketmq.tieredstore.provider.FileSegment;
-import org.apache.rocketmq.tieredstore.provider.PosixFileSegment;
-import org.apache.rocketmq.tieredstore.util.MessageStoreUtilTest;
+import org.apache.rocketmq.tieredstore.common.TieredMessageStoreConfig;
+import org.apache.rocketmq.tieredstore.common.TieredStoreExecutor;
+import org.apache.rocketmq.tieredstore.provider.TieredFileSegment;
+import org.apache.rocketmq.tieredstore.provider.posix.PosixFileSegment;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -50,19 +51,20 @@ public class IndexStoreFileTest {
     private static final Set<String> KEY_SET = Collections.singleton(KEY);
 
     private String filePath;
-    private MessageStoreConfig storeConfig;
+    private TieredMessageStoreConfig storeConfig;
     private IndexStoreFile indexStoreFile;
 
     @Before
     public void init() throws IOException {
+        TieredStoreExecutor.init();
         filePath = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         String directory = Paths.get(System.getProperty("user.home"), "store_test", filePath).toString();
-        storeConfig = new MessageStoreConfig();
+        storeConfig = new TieredMessageStoreConfig();
         storeConfig.setStorePathRootDir(directory);
         storeConfig.setTieredStoreFilePath(directory);
         storeConfig.setTieredStoreIndexFileMaxHashSlotNum(5);
         storeConfig.setTieredStoreIndexFileMaxIndexNum(20);
-        storeConfig.setTieredBackendServiceProvider("org.apache.rocketmq.tieredstore.provider.PosixFileSegment");
+        storeConfig.setTieredBackendServiceProvider("org.apache.rocketmq.tieredstore.provider.posix.PosixFileSegment");
         indexStoreFile = new IndexStoreFile(storeConfig, System.currentTimeMillis());
     }
 
@@ -72,7 +74,10 @@ public class IndexStoreFileTest {
             this.indexStoreFile.shutdown();
             this.indexStoreFile.destroy();
         }
-        MessageStoreUtilTest.deleteStoreDirectory(storeConfig.getTieredStoreFilePath());
+        TieredStoreTestUtil.destroyMetadataStore();
+        TieredStoreTestUtil.destroyTempDir(storeConfig.getStorePathRootDir());
+        TieredStoreTestUtil.destroyTempDir(storeConfig.getTieredStoreFilePath());
+        TieredStoreExecutor.shutdown();
     }
 
     @Test
@@ -210,7 +215,7 @@ public class IndexStoreFileTest {
     }
 
     @Test
-    public void doCompactionTest() {
+    public void doCompactionTest() throws Exception {
         long timestamp = indexStoreFile.getTimestamp();
         for (int i = 0; i < 10; i++) {
             Assert.assertEquals(AppendResult.SUCCESS, indexStoreFile.putKey(
@@ -218,10 +223,10 @@ public class IndexStoreFileTest {
         }
 
         ByteBuffer byteBuffer = indexStoreFile.doCompaction();
-        FileSegment fileSegment = new PosixFileSegment(
+        TieredFileSegment fileSegment = new PosixFileSegment(
             storeConfig, FileSegmentType.INDEX, filePath, 0L);
         fileSegment.append(byteBuffer, timestamp);
-        fileSegment.commitAsync().join();
+        fileSegment.commit();
         Assert.assertEquals(byteBuffer.limit(), fileSegment.getSize());
         fileSegment.destroyFile();
     }
@@ -251,10 +256,10 @@ public class IndexStoreFileTest {
         }
 
         ByteBuffer byteBuffer = indexStoreFile.doCompaction();
-        FileSegment fileSegment = new PosixFileSegment(
+        TieredFileSegment fileSegment = new PosixFileSegment(
             storeConfig, FileSegmentType.INDEX, filePath, 0L);
         fileSegment.append(byteBuffer, timestamp);
-        fileSegment.commitAsync().join();
+        fileSegment.commit();
         Assert.assertEquals(byteBuffer.limit(), fileSegment.getSize());
         indexStoreFile.destroy();
 

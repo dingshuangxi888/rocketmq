@@ -24,6 +24,11 @@ public enum AppendResult {
     SUCCESS,
 
     /**
+     * The offset provided for the append operation is incorrect.
+     */
+    OFFSET_INCORRECT,
+
+    /**
      * The buffer used for the append operation is full.
      */
     BUFFER_FULL,
@@ -32,6 +37,11 @@ public enum AppendResult {
      * The file is full and cannot accept more data.
      */
     FILE_FULL,
+
+    /**
+     * There was an I/O error during the append operation.
+     */
+    IO_ERROR,
 
     /**
      * The file is closed and cannot accept more data.

@@ -27,12 +27,13 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import org.apache.rocketmq.common.UtilAll;
-import org.apache.rocketmq.tieredstore.MessageStoreConfig;
+import org.apache.rocketmq.logging.org.slf4j.Logger;
+import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.tieredstore.common.AppendResult;
-import org.apache.rocketmq.tieredstore.file.FlatFileFactory;
-import org.apache.rocketmq.tieredstore.metadata.DefaultMetadataStore;
-import org.apache.rocketmq.tieredstore.metadata.MetadataStore;
-import org.apache.rocketmq.tieredstore.util.MessageStoreUtil;
+import org.apache.rocketmq.tieredstore.common.TieredMessageStoreConfig;
+import org.apache.rocketmq.tieredstore.common.TieredStoreExecutor;
+import org.apache.rocketmq.tieredstore.file.TieredFileAllocator;
+import org.apache.rocketmq.tieredstore.util.TieredStoreUtil;
 import org.junit.Assert;
 import org.junit.Ignore;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -50,17 +51,15 @@ import org.openjdk.jmh.results.format.ResultFormatType;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 @Ignore
 @State(Scope.Benchmark)
 @Fork(value = 1, jvmArgs = {"-Djava.net.preferIPv4Stack=true", "-Djmh.rmi.port=1099"})
 public class IndexStoreServiceBenchTest {
 
-    private static final Logger log = LoggerFactory.getLogger(MessageStoreUtil.TIERED_STORE_LOGGER_NAME);
+    private static final Logger log = LoggerFactory.getLogger(TieredStoreUtil.TIERED_STORE_LOGGER_NAME);
     private static final String TOPIC_NAME = "TopicTest";
-    private MessageStoreConfig storeConfig;
+    private TieredMessageStoreConfig storeConfig;
     private IndexStoreService indexStoreService;
     private final LongAdder failureCount = new LongAdder();
 
@@ -69,23 +68,25 @@ public class IndexStoreServiceBenchTest {
         String storePath = Paths.get(System.getProperty("user.home"), "store_test", "index").toString();
         UtilAll.deleteFile(new File(storePath));
         UtilAll.deleteFile(new File("./e96d41b2_IndexService"));
-        storeConfig = new MessageStoreConfig();
+        storeConfig = new TieredMessageStoreConfig();
         storeConfig.setBrokerClusterName("IndexService");
         storeConfig.setBrokerName("IndexServiceBroker");
         storeConfig.setStorePathRootDir(storePath);
-        storeConfig.setTieredBackendServiceProvider("org.apache.rocketmq.tieredstore.provider.PosixFileSegment");
+        storeConfig.setTieredBackendServiceProvider("org.apache.rocketmq.tieredstore.provider.posix.PosixFileSegment");
         storeConfig.setTieredStoreIndexFileMaxHashSlotNum(500 * 1000);
         storeConfig.setTieredStoreIndexFileMaxIndexNum(2000 * 1000);
-        MetadataStore metadataStore = new DefaultMetadataStore(storeConfig);
-        FlatFileFactory flatFileFactory = new FlatFileFactory(metadataStore, storeConfig);
-        indexStoreService = new IndexStoreService(flatFileFactory, storePath);
+        TieredStoreUtil.getMetadataStore(storeConfig);
+        TieredStoreExecutor.init();
+        TieredFileAllocator tieredFileAllocator = new TieredFileAllocator(storeConfig);
+        indexStoreService = new IndexStoreService(tieredFileAllocator, storePath);
         indexStoreService.start();
     }
 
-    @TearDown()
+    @TearDown
     public void shutdown() throws IOException {
         indexStoreService.shutdown();
         indexStoreService.destroy();
+        TieredStoreExecutor.shutdown();
     }
 
     //@Benchmark
