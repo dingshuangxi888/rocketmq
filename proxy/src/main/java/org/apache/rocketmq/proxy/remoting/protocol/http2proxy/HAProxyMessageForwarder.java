@@ -137,6 +137,11 @@ public class HAProxyMessageForwarder extends ChannelInboundHandlerAdapter {
         HAProxyProxiedProtocol proxiedProtocol = AclUtils.isColon(sourceAddress) ? HAProxyProxiedProtocol.TCP6 :
             HAProxyProxiedProtocol.TCP4;
 
+        return buildHAProxyMessage(proxiedProtocol, sourceAddress, destinationAddress, sourcePort, destinationPort, haProxyTLVs);
+    }
+
+    protected HAProxyMessage buildHAProxyMessage(HAProxyProxiedProtocol proxiedProtocol, String sourceAddress,
+        String destinationAddress, int sourcePort, int destinationPort, List<HAProxyTLV> haProxyTLVs) {
         return new HAProxyMessage(HAProxyProtocolVersion.V2, HAProxyCommand.PROXY,
             proxiedProtocol, sourceAddress, destinationAddress, sourcePort, destinationPort, haProxyTLVs);
     }
