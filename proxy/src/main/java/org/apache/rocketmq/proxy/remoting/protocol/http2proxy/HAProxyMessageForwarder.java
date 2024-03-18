@@ -89,8 +89,6 @@ public class HAProxyMessageForwarder extends ChannelInboundHandlerAdapter {
     protected HAProxyMessage buildHAProxyMessage(Channel inboundChannel) throws IllegalAccessException, DecoderException {
         String sourceAddress = null, destinationAddress = null;
         int sourcePort = 0, destinationPort = 0;
-        List<HAProxyTLV> haProxyTLVs = new ArrayList<>();
-
         if (inboundChannel.hasAttr(AttributeKeys.PROXY_PROTOCOL_ADDR)) {
             Attribute<?>[] attributes = (Attribute<?>[]) FieldUtils.readField(FIELD_ATTRIBUTE, inboundChannel);
             if (ArrayUtils.isEmpty(attributes)) {
@@ -117,12 +115,6 @@ public class HAProxyMessageForwarder extends ChannelInboundHandlerAdapter {
                 if (attribute.key() == AttributeKeys.PROXY_PROTOCOL_SERVER_PORT) {
                     destinationPort = Integer.parseInt(attributeValue);
                 }
-                if (StringUtils.startsWith(attributeKey, HAProxyConstants.PROXY_PROTOCOL_TLV_PREFIX)) {
-                    HAProxyTLV haProxyTLV = buildHAProxyTLV(attributeKey, attributeValue);
-                    if (haProxyTLV != null) {
-                        haProxyTLVs.add(haProxyTLV);
-                    }
-                }
             }
         } else {
             String remoteAddr = RemotingHelper.parseChannelRemoteAddr(inboundChannel);
@@ -137,13 +129,33 @@ public class HAProxyMessageForwarder extends ChannelInboundHandlerAdapter {
         HAProxyProxiedProtocol proxiedProtocol = AclUtils.isColon(sourceAddress) ? HAProxyProxiedProtocol.TCP6 :
             HAProxyProxiedProtocol.TCP4;
 
-        return buildHAProxyMessage(proxiedProtocol, sourceAddress, destinationAddress, sourcePort, destinationPort, haProxyTLVs);
-    }
+        List<HAProxyTLV> haProxyTLVs = buildHAProxyTLV(inboundChannel);
 
-    protected HAProxyMessage buildHAProxyMessage(HAProxyProxiedProtocol proxiedProtocol, String sourceAddress,
-        String destinationAddress, int sourcePort, int destinationPort, List<HAProxyTLV> haProxyTLVs) {
         return new HAProxyMessage(HAProxyProtocolVersion.V2, HAProxyCommand.PROXY,
             proxiedProtocol, sourceAddress, destinationAddress, sourcePort, destinationPort, haProxyTLVs);
+    }
+
+    protected List<HAProxyTLV> buildHAProxyTLV(Channel inboundChannel) throws IllegalAccessException, DecoderException {
+        List<HAProxyTLV> result = new ArrayList<>();
+        if (!inboundChannel.hasAttr(AttributeKeys.PROXY_PROTOCOL_ADDR)) {
+            return result;
+        }
+        Attribute<?>[] attributes = (Attribute<?>[]) FieldUtils.readField(FIELD_ATTRIBUTE, inboundChannel);
+        if (ArrayUtils.isEmpty(attributes)) {
+            return result;
+        }
+        for (Attribute<?> attribute : attributes) {
+            String attributeKey = attribute.key().name();
+            if (!StringUtils.startsWith(attributeKey, HAProxyConstants.PROXY_PROTOCOL_TLV_PREFIX)) {
+                continue;
+            }
+            String attributeValue = (String) attribute.get();
+            HAProxyTLV haProxyTLV = buildHAProxyTLV(attributeKey, attributeValue);
+            if (haProxyTLV != null) {
+                result.add(haProxyTLV);
+            }
+        }
+        return result;
     }
 
     protected HAProxyTLV buildHAProxyTLV(String attributeKey, String attributeValue) throws DecoderException {
