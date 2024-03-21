@@ -59,7 +59,7 @@ public class StatefulAuthorizationStrategy extends AbstractAuthorizationStrategy
         }
     }
 
-    private String buildKey(AuthorizationContext context) {
+    protected String buildKey(AuthorizationContext context) {
         if (context instanceof DefaultAuthorizationContext) {
             DefaultAuthorizationContext ctx = (DefaultAuthorizationContext) context;
             return ctx.getChannelId()

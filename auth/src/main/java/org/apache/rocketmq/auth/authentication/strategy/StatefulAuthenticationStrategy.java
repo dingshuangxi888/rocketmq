@@ -59,7 +59,7 @@ public class StatefulAuthenticationStrategy extends AbstractAuthenticationStrate
         }
     }
 
-    private String buildKey(AuthenticationContext context) {
+    protected String buildKey(AuthenticationContext context) {
         if (context instanceof DefaultAuthenticationContext) {
             DefaultAuthenticationContext ctx = (DefaultAuthenticationContext) context;
             if (StringUtils.isBlank(ctx.getUsername())) {
