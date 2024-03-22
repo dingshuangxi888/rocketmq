@@ -208,14 +208,14 @@ public class AuthenticationMetadataManagerImpl implements AuthenticationMetadata
 
     private AuthorizationMetadataProvider getAuthorizationMetadataProvider() {
         if (authenticationMetadataProvider == null) {
-            throw new IllegalStateException("The authenticationMetadataProvider is not configured");
+            throw new IllegalStateException("the authorization is not enabled or the metadata provider is not configured.");
         }
         return authorizationMetadataProvider;
     }
 
     private AuthenticationMetadataProvider getAuthenticationMetadataProvider() {
         if (authorizationMetadataProvider == null) {
-            throw new IllegalStateException("The authorizationMetadataProvider is not configured");
+            throw new IllegalStateException("the authentication is not enabled or the metadata provider is not configured.");
         }
         return authenticationMetadataProvider;
     }

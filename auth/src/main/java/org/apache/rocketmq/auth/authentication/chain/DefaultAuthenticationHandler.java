@@ -45,6 +45,9 @@ public class DefaultAuthenticationHandler implements Handler<DefaultAuthenticati
     }
 
     protected CompletableFuture<User> getUser(DefaultAuthenticationContext context) {
+        if (this.authenticationMetadataProvider == null) {
+            throw new AuthenticationException("the authentication is not enabled or the metadata provider is not config.");
+        }
         if (StringUtils.isEmpty(context.getUsername())) {
             throw new AuthenticationException("username cannot be null.");
         }

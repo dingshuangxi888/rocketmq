@@ -78,6 +78,9 @@ public class AuthorizationFactory {
         if (config == null) {
             return null;
         }
+        if (!config.isAuthorizationEnabled()) {
+            return null;
+        }
         return computeIfAbsent(METADATA_PROVIDER_PREFIX + config.getConfigName(), key -> {
             try {
                 Class<? extends AuthorizationMetadataProvider> clazz = LocalAuthorizationMetadataProvider.class;

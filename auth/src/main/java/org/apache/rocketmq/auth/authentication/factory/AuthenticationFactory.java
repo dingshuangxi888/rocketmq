@@ -76,6 +76,9 @@ public class AuthenticationFactory {
         if (config == null) {
             return null;
         }
+        if (!config.isAuthenticationEnabled()) {
+            return null;
+        }
         return computeIfAbsent(METADATA_PROVIDER_PREFIX + config.getConfigName(), key -> {
             try {
                 Class<? extends AuthenticationMetadataProvider> clazz = LocalAuthenticationMetadataProvider.class;

@@ -22,6 +22,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.apache.commons.collections.CollectionUtils;
+import org.apache.rocketmq.auth.authentication.exception.AuthenticationException;
 import org.apache.rocketmq.auth.authorization.context.DefaultAuthorizationContext;
 import org.apache.rocketmq.auth.authorization.enums.Decision;
 import org.apache.rocketmq.auth.authorization.enums.PolicyType;
@@ -54,6 +55,9 @@ public class AclAuthorizationHandler implements Handler<DefaultAuthorizationCont
     @Override
     public CompletableFuture<Void> handle(DefaultAuthorizationContext context,
         HandlerChain<DefaultAuthorizationContext, CompletableFuture<Void>> chain) {
+        if (this.authorizationMetadataProvider == null) {
+            throw new AuthenticationException("the authorization is not enabled or the metadata provider is not configured.");
+        }
         return authorizationMetadataProvider.getAcl(context.getSubject()).thenAccept(acl -> {
             if (acl == null) {
                 throwException(context, "no matched policies.");
