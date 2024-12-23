@@ -45,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.acl.AccessValidator;
+import org.apache.rocketmq.acl.common.AclException;
 import org.apache.rocketmq.acl.plain.PlainAccessValidator;
 import org.apache.rocketmq.auth.authentication.enums.UserType;
 import org.apache.rocketmq.auth.authentication.exception.AuthenticationException;
@@ -405,6 +406,8 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                 return this.getAcl(ctx, request);
             case RequestCode.AUTH_LIST_ACL:
                 return this.listAcl(ctx, request);
+            case RequestCode.POP_ROLLBACK:
+                return this.transferPopToFsStore(ctx, request);
             default:
                 return getUnknownCmdResponse(ctx, request);
         }
@@ -424,7 +427,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         SubscriptionGroupConfig groupConfig = this.brokerController.getSubscriptionGroupManager().getSubscriptionGroupTable().get(requestHeader.getGroup());
         if (groupConfig == null) {
             LOGGER.error("No group in this broker, client: {} group: {}", ctx.channel().remoteAddress(), requestHeader.getGroup());
-            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setCode(ResponseCode.SUBSCRIPTION_GROUP_NOT_EXIST);
             response.setRemark("No group in this broker");
             return response;
         }
@@ -513,13 +516,13 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         try {
             TopicValidator.ValidateTopicResult result = TopicValidator.validateTopic(topic);
             if (!result.isValid()) {
-                response.setCode(ResponseCode.SYSTEM_ERROR);
+                response.setCode(ResponseCode.INVALID_PARAMETER);
                 response.setRemark(result.getRemark());
                 return response;
             }
             if (brokerController.getBrokerConfig().isValidateSystemTopicWhenUpdateTopic()) {
                 if (TopicValidator.isSystemTopic(topic)) {
-                    response.setCode(ResponseCode.SYSTEM_ERROR);
+                    response.setCode(ResponseCode.INVALID_PARAMETER);
                     response.setRemark("The topic[" + topic + "] is conflict with system topic.");
                     return response;
                 }
@@ -540,7 +543,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                 String msgTypeAttrKey = AttributeParser.ATTR_ADD_PLUS_SIGN + TopicAttributes.TOPIC_MESSAGE_TYPE_ATTRIBUTE.getName();
                 String msgTypeAttrValue = topicConfig.getAttributes().get(msgTypeAttrKey);
                 if (msgTypeAttrValue != null && msgTypeAttrValue.equals(TopicMessageType.MIXED.getValue())) {
-                    response.setCode(ResponseCode.SYSTEM_ERROR);
+                    response.setCode(ResponseCode.INVALID_PARAMETER);
                     response.setRemark("MIXED message type is not supported.");
                     return response;
                 }
@@ -603,13 +606,13 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                 String topic = topicConfig.getTopicName();
                 TopicValidator.ValidateTopicResult result = TopicValidator.validateTopic(topic);
                 if (!result.isValid()) {
-                    response.setCode(ResponseCode.SYSTEM_ERROR);
+                    response.setCode(ResponseCode.INVALID_PARAMETER);
                     response.setRemark(result.getRemark());
                     return response;
                 }
                 if (brokerController.getBrokerConfig().isValidateSystemTopicWhenUpdateTopic()) {
                     if (TopicValidator.isSystemTopic(topic)) {
-                        response.setCode(ResponseCode.SYSTEM_ERROR);
+                        response.setCode(ResponseCode.INVALID_PARAMETER);
                         response.setRemark("The topic[" + topic + "] is conflict with system topic.");
                         return response;
                     }
@@ -619,7 +622,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                     String msgTypeAttrKey = AttributeParser.ATTR_ADD_PLUS_SIGN + TopicAttributes.TOPIC_MESSAGE_TYPE_ATTRIBUTE.getName();
                     String msgTypeAttrValue = topicConfig.getAttributes().get(msgTypeAttrKey);
                     if (msgTypeAttrValue != null && msgTypeAttrValue.equals(TopicMessageType.MIXED.getValue())) {
-                        response.setCode(ResponseCode.SYSTEM_ERROR);
+                        response.setCode(ResponseCode.INVALID_PARAMETER);
                         response.setRemark("MIXED message type is not supported.");
                         return response;
                     }
@@ -673,13 +676,13 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
 
         TopicValidator.ValidateTopicResult result = TopicValidator.validateTopic(topic);
         if (!result.isValid()) {
-            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setCode(ResponseCode.INVALID_PARAMETER);
             response.setRemark(result.getRemark());
             return response;
         }
         if (brokerController.getBrokerConfig().isValidateSystemTopicWhenUpdateTopic()) {
             if (TopicValidator.isSystemTopic(topic)) {
-                response.setCode(ResponseCode.SYSTEM_ERROR);
+                response.setCode(ResponseCode.INVALID_PARAMETER);
                 response.setRemark("The topic[" + topic + "] is conflict with system topic.");
                 return response;
             }
@@ -720,14 +723,14 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         String topic = requestHeader.getTopic();
 
         if (UtilAll.isBlank(topic)) {
-            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setCode(ResponseCode.INVALID_PARAMETER);
             response.setRemark("The specified topic is blank.");
             return response;
         }
 
         if (brokerController.getBrokerConfig().isValidateSystemTopicWhenUpdateTopic()) {
             if (TopicValidator.isSystemTopic(topic)) {
-                response.setCode(ResponseCode.SYSTEM_ERROR);
+                response.setCode(ResponseCode.INVALID_PARAMETER);
                 response.setRemark("The topic[" + topic + "] is conflict with system topic.");
                 return response;
             }
@@ -771,26 +774,15 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         this.brokerController.getMessageStore().deleteTopics(Sets.newHashSet(topic));
     }
 
-    private synchronized RemotingCommand updateAndCreateAccessConfig(ChannelHandlerContext ctx,
-        RemotingCommand request) throws RemotingCommandException {
+    private synchronized RemotingCommand updateAndCreateAccessConfig(ChannelHandlerContext ctx, RemotingCommand request) {
         final RemotingCommand response = RemotingCommand.createResponseCommand(null);
 
-        final CreateAccessConfigRequestHeader requestHeader =
-            (CreateAccessConfigRequestHeader) request.decodeCommandCustomHeader(CreateAccessConfigRequestHeader.class);
-
-        PlainAccessConfig accessConfig = new PlainAccessConfig();
-        accessConfig.setAccessKey(requestHeader.getAccessKey());
-        accessConfig.setSecretKey(requestHeader.getSecretKey());
-        accessConfig.setWhiteRemoteAddress(requestHeader.getWhiteRemoteAddress());
-        accessConfig.setDefaultTopicPerm(requestHeader.getDefaultTopicPerm());
-        accessConfig.setDefaultGroupPerm(requestHeader.getDefaultGroupPerm());
-        accessConfig.setTopicPerms(UtilAll.split(requestHeader.getTopicPerms(), ","));
-        accessConfig.setGroupPerms(UtilAll.split(requestHeader.getGroupPerms(), ","));
-        accessConfig.setAdmin(requestHeader.isAdmin());
         try {
+            ensureAclEnabled();
 
+            final CreateAccessConfigRequestHeader requestHeader = request.decodeCommandCustomHeader(CreateAccessConfigRequestHeader.class);
             AccessValidator accessValidator = this.brokerController.getAccessValidatorMap().get(PlainAccessValidator.class);
-            if (accessValidator.updateAccessConfig(accessConfig)) {
+            if (accessValidator.updateAccessConfig(createAccessConfig(requestHeader))) {
                 response.setCode(ResponseCode.SUCCESS);
                 response.setOpaque(request.getOpaque());
                 response.markResponseType();
@@ -813,15 +805,28 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         return null;
     }
 
-    private synchronized RemotingCommand deleteAccessConfig(ChannelHandlerContext ctx,
-        RemotingCommand request) throws RemotingCommandException {
+    private PlainAccessConfig createAccessConfig(final CreateAccessConfigRequestHeader requestHeader) {
+        PlainAccessConfig accessConfig = new PlainAccessConfig();
+        accessConfig.setAccessKey(requestHeader.getAccessKey());
+        accessConfig.setSecretKey(requestHeader.getSecretKey());
+        accessConfig.setWhiteRemoteAddress(requestHeader.getWhiteRemoteAddress());
+        accessConfig.setDefaultTopicPerm(requestHeader.getDefaultTopicPerm());
+        accessConfig.setDefaultGroupPerm(requestHeader.getDefaultGroupPerm());
+        accessConfig.setTopicPerms(UtilAll.split(requestHeader.getTopicPerms(), ","));
+        accessConfig.setGroupPerms(UtilAll.split(requestHeader.getGroupPerms(), ","));
+        accessConfig.setAdmin(requestHeader.isAdmin());
+        return accessConfig;
+    }
+
+    private synchronized RemotingCommand deleteAccessConfig(ChannelHandlerContext ctx, RemotingCommand request) {
         final RemotingCommand response = RemotingCommand.createResponseCommand(null);
 
-        final DeleteAccessConfigRequestHeader requestHeader =
-            (DeleteAccessConfigRequestHeader) request.decodeCommandCustomHeader(DeleteAccessConfigRequestHeader.class);
         LOGGER.info("DeleteAccessConfig called by {}", RemotingHelper.parseChannelRemoteAddr(ctx.channel()));
 
         try {
+            ensureAclEnabled();
+
+            final DeleteAccessConfigRequestHeader requestHeader = request.decodeCommandCustomHeader(DeleteAccessConfigRequestHeader.class);
             String accessKey = requestHeader.getAccessKey();
             AccessValidator accessValidator = this.brokerController.getAccessValidatorMap().get(PlainAccessValidator.class);
             if (accessValidator.deleteAccessConfig(accessKey)) {
@@ -848,15 +853,13 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         return null;
     }
 
-    private synchronized RemotingCommand updateGlobalWhiteAddrsConfig(ChannelHandlerContext ctx,
-        RemotingCommand request) throws RemotingCommandException {
-
+    private synchronized RemotingCommand updateGlobalWhiteAddrsConfig(ChannelHandlerContext ctx, RemotingCommand request) {
         final RemotingCommand response = RemotingCommand.createResponseCommand(null);
 
-        final UpdateGlobalWhiteAddrsConfigRequestHeader requestHeader =
-            (UpdateGlobalWhiteAddrsConfigRequestHeader) request.decodeCommandCustomHeader(UpdateGlobalWhiteAddrsConfigRequestHeader.class);
-
         try {
+            ensureAclEnabled();
+
+            final UpdateGlobalWhiteAddrsConfigRequestHeader requestHeader = request.decodeCommandCustomHeader(UpdateGlobalWhiteAddrsConfigRequestHeader.class);
             AccessValidator accessValidator = this.brokerController.getAccessValidatorMap().get(PlainAccessValidator.class);
             if (accessValidator.updateGlobalWhiteAddrsConfig(UtilAll.split(requestHeader.getGlobalWhiteAddrs(), ","),
                 requestHeader.getAclFileFullPath())) {
@@ -883,18 +886,12 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
     }
 
     private RemotingCommand getBrokerAclConfigVersion(ChannelHandlerContext ctx, RemotingCommand request) {
-
         final RemotingCommand response = RemotingCommand.createResponseCommand(GetBrokerAclConfigResponseHeader.class);
 
-        if (!brokerController.getBrokerConfig().isAclEnable()) {
-            response.setCode(ResponseCode.SYSTEM_ERROR);
-            response.setRemark("The broker does not enable acl.");
-            return response;
-        }
-
-        final GetBrokerAclConfigResponseHeader responseHeader = (GetBrokerAclConfigResponseHeader) response.readCustomHeader();
-
         try {
+            ensureAclEnabled();
+
+            final GetBrokerAclConfigResponseHeader responseHeader = (GetBrokerAclConfigResponseHeader) response.readCustomHeader();
             AccessValidator accessValidator = this.brokerController.getAccessValidatorMap().get(PlainAccessValidator.class);
 
             responseHeader.setVersion(accessValidator.getAclConfigVersion());
@@ -907,9 +904,16 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             return response;
         } catch (Exception e) {
             LOGGER.error("Failed to generate a proper getBrokerAclConfigVersion response", e);
+            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setRemark(e.getMessage());
+            return response;
         }
+    }
 
-        return null;
+    private void ensureAclEnabled() {
+        if (!brokerController.getBrokerConfig().isAclEnable()) {
+            throw new AclException("The broker does not enable acl.");
+        }
     }
 
     private RemotingCommand getUnknownCmdResponse(ChannelHandlerContext ctx, RemotingCommand request) {
@@ -1090,7 +1094,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             }
             int mode = Integer.parseInt(extFields.get(FIleReadaheadMode.READ_AHEAD_MODE));
             if (mode != LibC.MADV_RANDOM && mode != LibC.MADV_NORMAL) {
-                response.setCode(ResponseCode.SYSTEM_ERROR);
+                response.setCode(ResponseCode.INVALID_PARAMETER);
                 response.setRemark("set commitlog readahead mode param value error");
                 return response;
             }
@@ -2184,6 +2188,9 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         String brokerName = brokerController.getBrokerConfig().getBrokerName();
         for (Map.Entry<Integer, Long> entry : queueOffsetMap.entrySet()) {
             brokerController.getPopInflightMessageCounter().clearInFlightMessageNum(topic, group, entry.getKey());
+            if (brokerController.getBrokerConfig().isPopConsumerKVServiceEnable()) {
+                brokerController.getPopConsumerService().clearCache(group, topic, queueId);
+            }
             body.getOffsetTable().put(new MessageQueue(topic, brokerName, entry.getKey()), entry.getValue());
         }
 
@@ -3079,7 +3086,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
 
         CreateUserRequestHeader requestHeader = request.decodeCommandCustomHeader(CreateUserRequestHeader.class);
         if (StringUtils.isEmpty(requestHeader.getUsername())) {
-            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setCode(ResponseCode.INVALID_PARAMETER);
             response.setRemark("The username is blank");
             return response;
         }
@@ -3111,7 +3118,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
 
         UpdateUserRequestHeader requestHeader = request.decodeCommandCustomHeader(UpdateUserRequestHeader.class);
         if (StringUtils.isEmpty(requestHeader.getUsername())) {
-            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setCode(ResponseCode.INVALID_PARAMETER);
             response.setRemark("The username is blank");
             return response;
         }
@@ -3175,7 +3182,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         GetUserRequestHeader requestHeader = request.decodeCommandCustomHeader(GetUserRequestHeader.class);
 
         if (StringUtils.isBlank(requestHeader.getUsername())) {
-            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setCode(ResponseCode.INVALID_PARAMETER);
             response.setRemark("The username is blank");
             return response;
         }
@@ -3518,5 +3525,20 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             return false;
         }
         return cqUnit1.getTagsCode() == cqUnit2.getTagsCode();
+    }
+
+    private RemotingCommand transferPopToFsStore(ChannelHandlerContext ctx, RemotingCommand request) {
+        final RemotingCommand response = RemotingCommand.createResponseCommand(null);
+        try {
+            if (brokerController.getPopConsumerService() != null) {
+                brokerController.getPopConsumerService().transferToFsStore();
+            }
+            response.setCode(ResponseCode.SUCCESS);
+        } catch (Exception e) {
+            LOGGER.error("PopConsumerStore transfer from kvStore to fsStore finish [{}]", request, e);
+            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setRemark(e.getMessage());
+        }
+        return response;
     }
 }
