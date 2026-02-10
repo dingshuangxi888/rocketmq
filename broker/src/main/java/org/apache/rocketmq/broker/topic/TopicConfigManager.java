@@ -215,6 +215,26 @@ public class TopicConfigManager extends ConfigManager {
         }
 
         {
+            // TopicValidator.RMQ_SYS_ROCKSDB_TRANS_HALF_TOPIC
+            String topic = TopicValidator.RMQ_SYS_ROCKSDB_TRANS_HALF_TOPIC;
+            TopicConfig topicConfig = new TopicConfig(topic);
+            TopicValidator.addSystemTopic(topic);
+            topicConfig.setReadQueueNums(1);
+            topicConfig.setWriteQueueNums(1);
+            putTopicConfig(topicConfig);
+        }
+
+        {
+            // TopicValidator.RMQ_SYS_ROCKSDB_TRANS_OP_HALF_TOPIC
+            String topic = TopicValidator.RMQ_SYS_ROCKSDB_TRANS_OP_HALF_TOPIC;
+            TopicConfig topicConfig = new TopicConfig(topic);
+            TopicValidator.addSystemTopic(topic);
+            topicConfig.setReadQueueNums(1);
+            topicConfig.setWriteQueueNums(1);
+            putTopicConfig(topicConfig);
+        }
+
+        {
             if (this.brokerController.getMessageStoreConfig().isTimerWheelEnable()) {
                 String topic = TimerMessageStore.TIMER_TOPIC;
                 TopicConfig topicConfig = new TopicConfig(topic);
@@ -676,7 +696,7 @@ public class TopicConfigManager extends ConfigManager {
     public String encode(final boolean prettyFormat) {
         TopicConfigSerializeWrapper topicConfigSerializeWrapper = new TopicConfigSerializeWrapper();
         topicConfigSerializeWrapper.setTopicConfigTable(this.topicConfigTable);
-        topicConfigSerializeWrapper.setDataVersion(this.dataVersion);
+        topicConfigSerializeWrapper.setDataVersion(getDataVersion());
         return topicConfigSerializeWrapper.toJson(prettyFormat);
     }
 

@@ -34,7 +34,7 @@ import org.apache.rocketmq.proxy.common.MessageReceiptHandle;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.config.ProxyConfig;
-import org.apache.rocketmq.proxy.grpc.v2.AbstractMessingActivity;
+import org.apache.rocketmq.proxy.grpc.v2.AbstractMessagingActivity;
 import org.apache.rocketmq.proxy.grpc.v2.channel.GrpcChannelManager;
 import org.apache.rocketmq.proxy.grpc.v2.channel.GrpcClientChannel;
 import org.apache.rocketmq.proxy.grpc.v2.common.GrpcClientSettingsManager;
@@ -48,7 +48,7 @@ import org.apache.rocketmq.proxy.service.route.MessageQueueView;
 import org.apache.rocketmq.remoting.protocol.filter.FilterAPI;
 import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
 
-public class ReceiveMessageActivity extends AbstractMessingActivity {
+public class ReceiveMessageActivity extends AbstractMessagingActivity {
     private static final String ILLEGAL_POLLING_TIME_INTRODUCED_CLIENT_VERSION = "5.0.3";
 
     public ReceiveMessageActivity(MessagingProcessor messagingProcessor,
@@ -135,6 +135,7 @@ public class ReceiveMessageActivity extends AbstractMessingActivity {
                     request.hasAttemptId() ? request.getAttemptId() : null,
                     timeRemaining
                 ).thenAccept(popResult -> {
+                    Runnable doAfterWrite = null;
                     if (proxyConfig.isEnableProxyAutoRenew() && request.getAutoRenew()) {
                         if (PopStatus.FOUND.equals(popResult.getPopStatus())) {
                             GrpcClientChannel clientChannel = grpcChannelManager.getChannel(ctx.getClientID());
@@ -145,19 +146,21 @@ public class ReceiveMessageActivity extends AbstractMessingActivity {
                                     writer.processThrowableWhenWriteMessage(e, ctx, request, messageExt));
                                 throw e;
                             }
-                            List<MessageExt> messageExtList = popResult.getMsgFoundList();
-                            for (MessageExt messageExt : messageExtList) {
-                                String receiptHandle = messageExt.getProperty(MessageConst.PROPERTY_POP_CK);
-                                if (receiptHandle != null) {
-                                    MessageReceiptHandle messageReceiptHandle =
-                                        new MessageReceiptHandle(group, topic, messageExt.getQueueId(), receiptHandle, messageExt.getMsgId(),
-                                            messageExt.getQueueOffset(), messageExt.getReconsumeTimes());
-                                    messagingProcessor.addReceiptHandle(ctx, clientChannel, group, messageExt.getMsgId(), messageReceiptHandle);
+                            doAfterWrite = () -> {
+                                List<MessageExt> messageExtList = popResult.getMsgFoundList();
+                                for (MessageExt messageExt : messageExtList) {
+                                    String receiptHandle = messageExt.getProperty(MessageConst.PROPERTY_POP_CK);
+                                    if (receiptHandle != null) {
+                                        MessageReceiptHandle messageReceiptHandle =
+                                            new MessageReceiptHandle(group, topic, messageExt.getQueueId(), receiptHandle, messageExt.getMsgId(),
+                                                messageExt.getQueueOffset(), messageExt.getReconsumeTimes());
+                                        messagingProcessor.addReceiptHandle(ctx, clientChannel, group, messageExt.getMsgId(), messageReceiptHandle);
+                                    }
                                 }
-                            }
+                            };
                         }
                     }
-                    writer.writeAndComplete(ctx, request, popResult);
+                    writer.writeAndComplete(ctx, request, popResult, doAfterWrite);
                 })
                 .exceptionally(t -> {
                     writer.writeAndComplete(ctx, request, t);

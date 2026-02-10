@@ -18,6 +18,7 @@ package org.apache.rocketmq.common.config;
 
 import com.google.common.collect.Maps;
 import io.netty.buffer.PooledByteBufAllocator;
+import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -84,6 +85,8 @@ public abstract class AbstractRocksDBStorage {
     protected CompactionOptions compactionOptions;
     protected CompactRangeOptions compactRangeOptions;
 
+    protected FlushOptions flushOptions;
+
     protected ColumnFamilyHandle defaultCFHandle;
     protected final List<ColumnFamilyOptions> cfOptions = new ArrayList<>();
     protected final List<ColumnFamilyHandle> cfHandles = new ArrayList<>();
@@ -115,6 +118,7 @@ public abstract class AbstractRocksDBStorage {
         initTotalOrderReadOptions();
         initCompactRangeOptions();
         initCompactionOptions();
+        initFlushOptions();
     }
 
     /**
@@ -165,6 +169,10 @@ public abstract class AbstractRocksDBStorage {
         this.compactionOptions.setCompression(compressionType);
         this.compactionOptions.setMaxSubcompactions(4);
         this.compactionOptions.setOutputFileSizeLimit(4 * 1024 * 1024 * 1024L);
+    }
+
+    protected void initFlushOptions() {
+        this.flushOptions = new FlushOptions();
     }
 
     public boolean hold() {
@@ -480,6 +488,10 @@ public abstract class AbstractRocksDBStorage {
      */
     protected abstract void preShutdown();
 
+    public boolean isLoaded() {
+        return loaded;
+    }
+
     public synchronized boolean shutdown() {
         try {
             if (!this.loaded) {
@@ -506,7 +518,9 @@ public abstract class AbstractRocksDBStorage {
             //1. close column family handles
             preShutdown();
 
-            this.defaultCFHandle.close();
+            if (this.defaultCFHandle.isOwningHandle()) {
+                this.defaultCFHandle.close();
+            }
 
             //2. close column family options.
             for (final ColumnFamilyOptions opt : this.cfOptions) {
@@ -524,6 +538,9 @@ public abstract class AbstractRocksDBStorage {
             }
             if (this.totalOrderReadOptions != null) {
                 this.totalOrderReadOptions.close();
+            }
+            if (this.flushOptions != null) {
+                this.flushOptions.close();
             }
             //4. close db.
             if (db != null && !this.readOnly) {
@@ -553,6 +570,7 @@ public abstract class AbstractRocksDBStorage {
             this.db = null;
             this.readOptions = null;
             this.totalOrderReadOptions = null;
+            this.flushOptions = null;
             this.writeOptions = null;
             this.ableWalWriteOptions = null;
             this.options = null;
@@ -709,6 +727,24 @@ public abstract class AbstractRocksDBStorage {
             }
             map.forEach((key, value) -> logger.info("level: {}\n{}", key, value.toString()));
         } catch (Exception ignored) {
+        }
+    }
+
+    public void destroy() {
+        recursiveDelete(new File(dbPath));
+    }
+
+    void recursiveDelete(File file) {
+        if (file.isFile()) {
+            if (file.delete()) {
+                LOGGER.info("Delete rocksdb file={}", file.getAbsolutePath());
+            }
+        } else {
+            File[] files = file.listFiles();
+            for (File f : files) {
+                recursiveDelete(f);
+            }
+            file.delete();
         }
     }
 }

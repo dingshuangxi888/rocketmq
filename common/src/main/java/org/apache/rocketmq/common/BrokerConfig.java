@@ -240,13 +240,19 @@ public class BrokerConfig extends BrokerIdentity {
     private boolean retrieveMessageFromPopRetryTopicV1 = true;
     private boolean enableRetryTopicV2 = false;
     private int popFromRetryProbability = 20;
+    // pop retry probability for priority mode
+    private int popFromRetryProbabilityForPriority = 0;
+    // 0 as the lowest priority if true
+    private boolean priorityOrderAsc = true;
     private boolean popConsumerFSServiceInit = true;
     private boolean popConsumerKVServiceLog = false;
     private boolean popConsumerKVServiceInit = false;
     private boolean popConsumerKVServiceEnable = false;
     private int popReviveMaxReturnSizePerRead = 16 * 1024;
+    private int popReviveConcurrency = 32;
     private int popReviveMaxAttemptTimes = 16;
-
+    // each message queue will have a corresponding retry queue
+    private boolean useSeparateRetryQueue = false;
     private boolean realTimeNotifyConsumerChange = true;
 
     private boolean litePullMessageEnable = true;
@@ -471,6 +477,12 @@ public class BrokerConfig extends BrokerIdentity {
      */
     private String configManagerVersion = ConfigManagerVersion.V1.getVersion();
 
+    /**
+     * Whether to use a single RocksDB instance with multiple column families for all configs
+     * instead of separate RocksDB instances for Topic, Group, and Offset configs
+     */
+    private boolean useSingleRocksDBForAllConfigs = false;
+
     private boolean allowRecallWhenBrokerNotWriteable = true;
 
     private boolean recallMessageEnable = false;
@@ -661,6 +673,14 @@ public class BrokerConfig extends BrokerIdentity {
 
     public void setPopConsumerKVServiceEnable(boolean popConsumerKVServiceEnable) {
         this.popConsumerKVServiceEnable = popConsumerKVServiceEnable;
+    }
+
+    public int getPopReviveConcurrency() {
+        return popReviveConcurrency;
+    }
+
+    public void setPopReviveConcurrency(int popReviveConcurrency) {
+        this.popReviveConcurrency = popReviveConcurrency;
     }
 
     public int getPopReviveMaxReturnSizePerRead() {
@@ -2116,6 +2136,14 @@ public class BrokerConfig extends BrokerIdentity {
         this.configManagerVersion = configManagerVersion;
     }
 
+    public boolean isUseSingleRocksDBForAllConfigs() {
+        return useSingleRocksDBForAllConfigs;
+    }
+
+    public void setUseSingleRocksDBForAllConfigs(boolean useSingleRocksDBForAllConfigs) {
+        this.useSingleRocksDBForAllConfigs = useSingleRocksDBForAllConfigs;
+    }
+
     public boolean isAllowRecallWhenBrokerNotWriteable() {
         return allowRecallWhenBrokerNotWriteable;
     }
@@ -2162,5 +2190,29 @@ public class BrokerConfig extends BrokerIdentity {
 
     public void setSplitMetadataSize(int splitMetadataSize) {
         this.splitMetadataSize = splitMetadataSize;
+    }
+
+    public int getPopFromRetryProbabilityForPriority() {
+        return popFromRetryProbabilityForPriority;
+    }
+
+    public void setPopFromRetryProbabilityForPriority(int popFromRetryProbabilityForPriority) {
+        this.popFromRetryProbabilityForPriority = popFromRetryProbabilityForPriority;
+    }
+
+    public boolean isPriorityOrderAsc() {
+        return priorityOrderAsc;
+    }
+
+    public void setPriorityOrderAsc(boolean priorityOrderAsc) {
+        this.priorityOrderAsc = priorityOrderAsc;
+    }
+
+    public boolean isUseSeparateRetryQueue() {
+        return useSeparateRetryQueue;
+    }
+
+    public void setUseSeparateRetryQueue(boolean useSeparateRetryQueue) {
+        this.useSeparateRetryQueue = useSeparateRetryQueue;
     }
 }
