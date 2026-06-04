@@ -319,6 +319,14 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                         }
                     }
                     break;
+                case RequestCode.UPDATE_BROKER_CONFIG:
+                    result.add(DefaultAuthorizationContext.of(subject,
+                        Resource.ofCluster(authConfig.getClusterName()), Action.UPDATE, sourceIp));
+                    break;
+                case RequestCode.GET_BROKER_CONFIG:
+                    result.add(DefaultAuthorizationContext.of(subject,
+                        Resource.ofCluster(authConfig.getClusterName()), Action.GET, sourceIp));
+                    break;
                 default:
                     result = buildContextByAnnotation(subject, command, sourceIp);
                     break;

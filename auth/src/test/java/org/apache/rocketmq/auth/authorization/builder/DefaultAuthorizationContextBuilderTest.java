@@ -63,6 +63,7 @@ import org.apache.rocketmq.remoting.protocol.header.CreateUserRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.EndTransactionRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.GetConsumerListByGroupRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.HeartbeatRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.PopMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PullMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.QueryConsumerOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.QueryMessageRequestHeader;
@@ -508,6 +509,70 @@ public class DefaultAuthorizationContextBuilderTest {
         Assert.assertEquals("User:rocketmq", result.get(0).getSubject().getSubjectKey());
         Assert.assertEquals("Cluster:DefaultCluster", result.get(0).getResource().getResourceKey());
         Assert.assertTrue(result.get(0).getActions().containsAll(Arrays.asList(Action.UPDATE)));
+
+        request = RemotingCommand.createRequestCommand(RequestCode.UPDATE_BROKER_CONFIG, null);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.makeCustomHeaderToNet();
+        result = builder.build(channelHandlerContext, request);
+        Assert.assertEquals(1, result.size());
+        Assert.assertEquals("User:rocketmq", result.get(0).getSubject().getSubjectKey());
+        Assert.assertEquals("Cluster:DefaultCluster", result.get(0).getResource().getResourceKey());
+        Assert.assertTrue(result.get(0).getActions().containsAll(Arrays.asList(Action.UPDATE)));
+        Assert.assertEquals(RequestCode.UPDATE_BROKER_CONFIG + "", result.get(0).getRpcCode());
+
+        request = RemotingCommand.createRequestCommand(RequestCode.GET_BROKER_CONFIG, null);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.makeCustomHeaderToNet();
+        result = builder.build(channelHandlerContext, request);
+        Assert.assertEquals(1, result.size());
+        Assert.assertEquals("User:rocketmq", result.get(0).getSubject().getSubjectKey());
+        Assert.assertEquals("Cluster:DefaultCluster", result.get(0).getResource().getResourceKey());
+        Assert.assertTrue(result.get(0).getActions().containsAll(Arrays.asList(Action.GET)));
+        Assert.assertEquals(RequestCode.GET_BROKER_CONFIG + "", result.get(0).getRpcCode());
+    }
+
+    /**
+     * Guards against the proxy cluster-mode authorization bypass: request codes that fall to the
+     * default switch branch (e.g. POP_MESSAGE) rely on the annotation-driven path, which only works
+     * when RequestHeaderRegistry is initialized. With the registry initialized in setUp(), the
+     * builder must resolve the @RocketMQAction/@RocketMQResource annotations into proper contexts
+     * instead of returning an empty list that would silently bypass policy checks.
+     */
+    @Test
+    public void buildRemotingByAnnotation() {
+        when(channel.id()).thenReturn(mockChannelId("channel-id"));
+        when(channel.hasAttr(eq(AttributeKeys.PROXY_PROTOCOL_ADDR))).thenReturn(true);
+        when(channel.attr(eq(AttributeKeys.PROXY_PROTOCOL_ADDR))).thenReturn(mockAttribute("192.168.0.1"));
+        when(channel.hasAttr(eq(AttributeKeys.PROXY_PROTOCOL_PORT))).thenReturn(true);
+        when(channel.attr(eq(AttributeKeys.PROXY_PROTOCOL_PORT))).thenReturn(mockAttribute("1234"));
+        when(channelHandlerContext.channel()).thenReturn(channel);
+
+        PopMessageRequestHeader popMessageRequestHeader = new PopMessageRequestHeader();
+        popMessageRequestHeader.setConsumerGroup("group");
+        popMessageRequestHeader.setTopic("topic");
+        popMessageRequestHeader.setQueueId(0);
+        popMessageRequestHeader.setMaxMsgNums(32);
+        popMessageRequestHeader.setInvisibleTime(60000L);
+        popMessageRequestHeader.setPollTime(15000L);
+        popMessageRequestHeader.setBornTime(System.currentTimeMillis());
+        popMessageRequestHeader.setInitMode(0);
+        RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.POP_MESSAGE, popMessageRequestHeader);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.makeCustomHeaderToNet();
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+
+        Assert.assertEquals(2, result.size());
+        Assert.assertEquals("User:rocketmq", getContext(result, ResourceType.GROUP).getSubject().getSubjectKey());
+        Assert.assertEquals("Group:group", getContext(result, ResourceType.GROUP).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.GROUP).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals("User:rocketmq", getContext(result, ResourceType.TOPIC).getSubject().getSubjectKey());
+        Assert.assertEquals("Topic:topic", getContext(result, ResourceType.TOPIC).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.TOPIC).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals("192.168.0.1", getContext(result, ResourceType.TOPIC).getSourceIp());
+        Assert.assertEquals(RequestCode.POP_MESSAGE + "", getContext(result, ResourceType.TOPIC).getRpcCode());
     }
 
     private DefaultAuthorizationContext getContext(List<DefaultAuthorizationContext> contexts,
