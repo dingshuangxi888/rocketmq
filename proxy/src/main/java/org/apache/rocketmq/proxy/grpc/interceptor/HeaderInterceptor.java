@@ -40,16 +40,20 @@ public class HeaderInterceptor implements ServerInterceptor {
         Metadata headers,
         ServerCallHandler<R, W> next
     ) {
+        // The remote/local address and proxy-protocol headers are server-authoritative: they are
+        // derived from the connection and drive security decisions such as ACL source-IP
+        // restrictions. They must be force-set (discarding any client-supplied value), otherwise a
+        // client could spoof them via the inbound gRPC metadata and bypass IP-scoped ACL grants.
         String remoteAddress = getProxyProtocolAddress(call.getAttributes());
         if (StringUtils.isBlank(remoteAddress)) {
             SocketAddress remoteSocketAddress = call.getAttributes().get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR);
             remoteAddress = parseSocketAddress(remoteSocketAddress);
         }
-        GrpcUtils.putHeaderIfNotExist(headers, GrpcConstants.REMOTE_ADDRESS, remoteAddress);
+        GrpcUtils.putHeader(headers, GrpcConstants.REMOTE_ADDRESS, remoteAddress);
 
         SocketAddress localSocketAddress = call.getAttributes().get(Grpc.TRANSPORT_ATTR_LOCAL_ADDR);
         String localAddress = parseSocketAddress(localSocketAddress);
-        GrpcUtils.putHeaderIfNotExist(headers, GrpcConstants.LOCAL_ADDRESS, localAddress);
+        GrpcUtils.putHeader(headers, GrpcConstants.LOCAL_ADDRESS, localAddress);
 
         for (Attributes.Key<?> key : call.getAttributes().keys()) {
             if (!StringUtils.startsWith(key.toString(), HAProxyConstants.PROXY_PROTOCOL_PREFIX)) {
@@ -58,12 +62,12 @@ public class HeaderInterceptor implements ServerInterceptor {
             Metadata.Key<String> headerKey
                     = Metadata.Key.of(key.toString(), Metadata.ASCII_STRING_MARSHALLER);
             String headerValue = String.valueOf(call.getAttributes().get(key));
-            GrpcUtils.putHeaderIfNotExist(headers, headerKey, headerValue);
+            GrpcUtils.putHeader(headers, headerKey, headerValue);
         }
 
         String channelId = call.getAttributes().get(AttributeKeys.CHANNEL_ID);
         if (StringUtils.isNotBlank(channelId)) {
-            GrpcUtils.putHeaderIfNotExist(headers, GrpcConstants.CHANNEL_ID, channelId);
+            GrpcUtils.putHeader(headers, GrpcConstants.CHANNEL_ID, channelId);
         }
 
         return next.startCall(call, headers);

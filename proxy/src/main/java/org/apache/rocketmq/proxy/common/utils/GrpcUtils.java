@@ -35,6 +35,24 @@ public class GrpcUtils {
         }
     }
 
+    /**
+     * Force-set a server-authoritative header, discarding any value supplied by the client.
+     * <p>
+     * Used for headers such as the remote/local address that drive security decisions (e.g. ACL
+     * source-IP restrictions). These must never be honored from the inbound request, otherwise a
+     * client could spoof them. Any pre-existing values for the key are removed first, so even when
+     * {@code value} is null the client-supplied value is not retained.
+     */
+    public static <T> void putHeader(Metadata headers, Metadata.Key<T> key, T value) {
+        if (headers == null) {
+            return;
+        }
+        headers.discardAll(key);
+        if (value != null) {
+            headers.put(key, value);
+        }
+    }
+
     public static <R, W, T> T getAttribute(ServerCall<R, W> call, Attributes.Key<T> key) {
         Attributes attributes = call.getAttributes();
         if (attributes == null) {
