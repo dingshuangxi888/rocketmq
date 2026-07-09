@@ -66,7 +66,12 @@ import org.apache.rocketmq.remoting.protocol.NamespaceUtil;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.remoting.protocol.RequestCode;
 import org.apache.rocketmq.remoting.protocol.RequestHeaderRegistry;
+import org.apache.rocketmq.remoting.protocol.body.BatchAck;
+import org.apache.rocketmq.remoting.protocol.body.BatchAckMessageRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.CheckClientRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.LockBatchRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.QueryAssignmentRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.SetMessageRequestModeRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.UnlockBatchRequestBody;
 import org.apache.rocketmq.remoting.protocol.header.GetConsumerListByGroupRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.QueryConsumerOffsetRequestHeader;
@@ -190,6 +195,7 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                         result.add(DefaultAuthorizationContext.of(subject, topic, Arrays.asList(Action.PUB, Action.SUB, Action.GET), sourceIp));
                     }
                     break;
+                case RequestCode.SEND_REPLY_MESSAGE:
                 case RequestCode.SEND_MESSAGE:
                     if (NamespaceUtil.isRetryTopic(fields.get(TOPIC))) {
                         if (StringUtils.isNotBlank(fields.get(GROUP))) {
@@ -203,6 +209,7 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                         result.add(DefaultAuthorizationContext.of(subject, topic, Action.PUB, sourceIp));
                     }
                     break;
+                case RequestCode.SEND_REPLY_MESSAGE_V2:
                 case RequestCode.SEND_MESSAGE_V2:
                 case RequestCode.SEND_BATCH_MESSAGE:
                     if (NamespaceUtil.isRetryTopic(fields.get(B))) {
@@ -231,6 +238,7 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                     group = Resource.ofGroup(fields.get(GROUP));
                     result.add(DefaultAuthorizationContext.of(subject, group, Action.SUB, sourceIp));
                     break;
+                case RequestCode.LITE_PULL_MESSAGE:
                 case RequestCode.PULL_MESSAGE:
                     if (!NamespaceUtil.isRetryTopic(fields.get(TOPIC))) {
                         topic = Resource.ofTopic(fields.get(TOPIC));
@@ -319,11 +327,75 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                         }
                     }
                     break;
+                // Message-plane operations that carry the consumer group and topic in the request
+                // body (not an annotated header), so without an explicit case they would fall through
+                // to the annotation path, produce an empty context, and be silently allowed. They
+                // require SUB on the topic and group, consistent with ACK_MESSAGE / message consumption.
+                case RequestCode.BATCH_ACK_MESSAGE: {
+                    BatchAckMessageRequestBody batchAckRequestBody =
+                        BatchAckMessageRequestBody.decode(command.getBody(), BatchAckMessageRequestBody.class);
+                    if (batchAckRequestBody != null && CollectionUtils.isNotEmpty(batchAckRequestBody.getAcks())) {
+                        for (BatchAck batchAck : batchAckRequestBody.getAcks()) {
+                            addSubContexts(result, subject, batchAck.getConsumerGroup(), batchAck.getTopic(), sourceIp);
+                        }
+                    }
+                    break;
+                }
+                case RequestCode.QUERY_ASSIGNMENT: {
+                    QueryAssignmentRequestBody queryAssignmentRequestBody =
+                        QueryAssignmentRequestBody.decode(command.getBody(), QueryAssignmentRequestBody.class);
+                    addSubContexts(result, subject, queryAssignmentRequestBody.getConsumerGroup(),
+                        queryAssignmentRequestBody.getTopic(), sourceIp);
+                    break;
+                }
+                case RequestCode.SET_MESSAGE_REQUEST_MODE: {
+                    SetMessageRequestModeRequestBody setMessageRequestModeRequestBody =
+                        SetMessageRequestModeRequestBody.decode(command.getBody(), SetMessageRequestModeRequestBody.class);
+                    addSubContexts(result, subject, setMessageRequestModeRequestBody.getConsumerGroup(),
+                        setMessageRequestModeRequestBody.getTopic(), sourceIp);
+                    break;
+                }
+                case RequestCode.CHECK_CLIENT_CONFIG: {
+                    CheckClientRequestBody checkClientRequestBody =
+                        CheckClientRequestBody.decode(command.getBody(), CheckClientRequestBody.class);
+                    if (checkClientRequestBody != null) {
+                        SubscriptionData checkSubscription = checkClientRequestBody.getSubscriptionData();
+                        addSubContexts(result, subject, checkClientRequestBody.getGroup(),
+                            checkSubscription != null ? checkSubscription.getTopic() : null, sourceIp);
+                    }
+                    break;
+                }
+                // Broker-admin write/maintenance operations. These are handled by AdminBrokerProcessor
+                // and have no @RocketMQAction request header, so without an explicit case they would
+                // fall through to the annotation path, produce an empty context, and be silently
+                // allowed. Require cluster-level UPDATE, consistent with the legacy Permission.ADMIN_CODE.
                 case RequestCode.UPDATE_BROKER_CONFIG:
+                case RequestCode.UPDATE_AND_CREATE_SUBSCRIPTIONGROUP:
+                case RequestCode.UPDATE_AND_CREATE_SUBSCRIPTIONGROUP_LIST:
+                case RequestCode.UPDATE_AND_CREATE_STATIC_TOPIC:
+                case RequestCode.SET_COMMITLOG_READ_MODE:
+                case RequestCode.CLEAN_UNUSED_TOPIC:
+                case RequestCode.CLEAN_EXPIRED_CONSUMEQUEUE:
+                case RequestCode.DELETE_EXPIRED_COMMITLOG:
+                case RequestCode.POP_ROLLBACK:
+                case RequestCode.UPDATE_COLD_DATA_FLOW_CTR_CONFIG:
+                case RequestCode.REMOVE_COLD_DATA_FLOW_CTR_CONFIG:
                     result.add(DefaultAuthorizationContext.of(subject,
                         Resource.ofCluster(authConfig.getClusterName()), Action.UPDATE, sourceIp));
                     break;
+                // Broker-admin read operations. Same rationale as the write group above; require
+                // cluster-level GET.
                 case RequestCode.GET_BROKER_CONFIG:
+                case RequestCode.GET_ALL_CONSUMER_OFFSET:
+                case RequestCode.GET_ALL_DELAY_OFFSET:
+                case RequestCode.GET_ALL_MESSAGE_REQUEST_MODE:
+                case RequestCode.GET_BROKER_RUNTIME_INFO:
+                case RequestCode.GET_BROKER_EPOCH_CACHE:
+                case RequestCode.GET_BROKER_HA_STATUS:
+                case RequestCode.GET_COLD_DATA_FLOW_CTR_INFO:
+                case RequestCode.GET_SYSTEM_TOPIC_LIST_FROM_BROKER:
+                case RequestCode.GET_TIMER_CHECK_POINT:
+                case RequestCode.GET_TIMER_METRICS:
                     result.add(DefaultAuthorizationContext.of(subject,
                         Resource.ofCluster(authConfig.getClusterName()), Action.GET, sourceIp));
                     break;
@@ -343,6 +415,16 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
             throw new AuthorizationException("parse authorization context error.", t);
         }
         return result;
+    }
+
+    private void addSubContexts(List<DefaultAuthorizationContext> result, Subject subject, String group,
+        String topic, String sourceIp) {
+        if (StringUtils.isNotBlank(topic) && !NamespaceUtil.isRetryTopic(topic)) {
+            result.add(DefaultAuthorizationContext.of(subject, Resource.ofTopic(topic), Action.SUB, sourceIp));
+        }
+        if (StringUtils.isNotBlank(group)) {
+            result.add(DefaultAuthorizationContext.of(subject, Resource.ofGroup(group), Action.SUB, sourceIp));
+        }
     }
 
     private List<DefaultAuthorizationContext> buildContextByAnnotation(Subject subject, RemotingCommand request,

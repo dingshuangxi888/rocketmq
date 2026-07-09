@@ -46,6 +46,7 @@ import io.netty.channel.ChannelId;
 import io.netty.util.Attribute;
 import io.netty.util.AttributeKey;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import org.apache.rocketmq.auth.authorization.context.DefaultAuthorizationContext;
 import org.apache.rocketmq.auth.config.AuthConfig;
@@ -57,6 +58,11 @@ import org.apache.rocketmq.remoting.netty.AttributeKeys;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.remoting.protocol.RequestCode;
 import org.apache.rocketmq.remoting.protocol.RequestHeaderRegistry;
+import org.apache.rocketmq.remoting.protocol.body.BatchAck;
+import org.apache.rocketmq.remoting.protocol.body.BatchAckMessageRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.CheckClientRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.QueryAssignmentRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.SetMessageRequestModeRequestBody;
 import org.apache.rocketmq.remoting.protocol.header.ConsumerSendMsgBackRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.CreateTopicRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.CreateUserRequestHeader;
@@ -575,10 +581,260 @@ public class DefaultAuthorizationContextBuilderTest {
         Assert.assertEquals(RequestCode.POP_MESSAGE + "", getContext(result, ResourceType.TOPIC).getRpcCode());
     }
 
+    /**
+     * Broker-admin read operations (the Permission.ADMIN_CODE class) must require cluster-level GET.
+     * Before the fix these codes fell to the default annotation path, which has no @RocketMQAction
+     * request header for them, produced an empty context, and were silently allowed for any
+     * authenticated low-privilege user.
+     */
+    @Test
+    public void buildRemotingAdminReadCodesRequireClusterGet() {
+        mockRemotingChannel();
+        int[] readCodes = new int[] {
+            RequestCode.GET_ALL_CONSUMER_OFFSET,
+            RequestCode.GET_ALL_DELAY_OFFSET,
+            RequestCode.GET_ALL_MESSAGE_REQUEST_MODE,
+            RequestCode.GET_BROKER_RUNTIME_INFO,
+            RequestCode.GET_BROKER_EPOCH_CACHE,
+            RequestCode.GET_BROKER_HA_STATUS,
+            RequestCode.GET_COLD_DATA_FLOW_CTR_INFO,
+            RequestCode.GET_SYSTEM_TOPIC_LIST_FROM_BROKER,
+            RequestCode.GET_TIMER_CHECK_POINT,
+            RequestCode.GET_TIMER_METRICS,
+        };
+        for (int code : readCodes) {
+            RemotingCommand request = RemotingCommand.createRequestCommand(code, null);
+            request.setVersion(441);
+            request.addExtField("AccessKey", "rocketmq");
+            request.makeCustomHeaderToNet();
+            List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+            Assert.assertEquals("code " + code, 1, result.size());
+            Assert.assertEquals("code " + code, "User:rocketmq", result.get(0).getSubject().getSubjectKey());
+            Assert.assertEquals("code " + code, "Cluster:DefaultCluster", result.get(0).getResource().getResourceKey());
+            Assert.assertTrue("code " + code, result.get(0).getActions().containsAll(Arrays.asList(Action.GET)));
+            Assert.assertEquals("code " + code, code + "", result.get(0).getRpcCode());
+        }
+    }
+
+    /**
+     * Broker-admin write/maintenance operations must require cluster-level UPDATE. Same bypass class
+     * as the read codes: previously an empty context silently allowed a low-privilege user to rewrite
+     * broker state (subscription groups, static topics, commitlog read mode, data cleanup, etc.).
+     */
+    @Test
+    public void buildRemotingAdminWriteCodesRequireClusterUpdate() {
+        mockRemotingChannel();
+        int[] writeCodes = new int[] {
+            RequestCode.UPDATE_AND_CREATE_SUBSCRIPTIONGROUP,
+            RequestCode.UPDATE_AND_CREATE_SUBSCRIPTIONGROUP_LIST,
+            RequestCode.UPDATE_AND_CREATE_STATIC_TOPIC,
+            RequestCode.SET_COMMITLOG_READ_MODE,
+            RequestCode.CLEAN_UNUSED_TOPIC,
+            RequestCode.CLEAN_EXPIRED_CONSUMEQUEUE,
+            RequestCode.DELETE_EXPIRED_COMMITLOG,
+            RequestCode.POP_ROLLBACK,
+            RequestCode.UPDATE_COLD_DATA_FLOW_CTR_CONFIG,
+            RequestCode.REMOVE_COLD_DATA_FLOW_CTR_CONFIG,
+        };
+        for (int code : writeCodes) {
+            RemotingCommand request = RemotingCommand.createRequestCommand(code, null);
+            request.setVersion(441);
+            request.addExtField("AccessKey", "rocketmq");
+            request.makeCustomHeaderToNet();
+            List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+            Assert.assertEquals("code " + code, 1, result.size());
+            Assert.assertEquals("code " + code, "User:rocketmq", result.get(0).getSubject().getSubjectKey());
+            Assert.assertEquals("code " + code, "Cluster:DefaultCluster", result.get(0).getResource().getResourceKey());
+            Assert.assertTrue("code " + code, result.get(0).getActions().containsAll(Arrays.asList(Action.UPDATE)));
+            Assert.assertEquals("code " + code, code + "", result.get(0).getRpcCode());
+        }
+    }
+
+    /**
+     * LITE_PULL_MESSAGE is a message-consumption interface (registered to the pull processor) that
+     * fell to the default branch with no @RocketMQAction request header, so it bypassed ACL even
+     * after the registry was initialized. It must be authorized exactly like PULL_MESSAGE: SUB on
+     * both topic and consumer group.
+     */
+    @Test
+    public void buildRemotingLitePullMessageRequiresTopicAndGroupSub() {
+        mockRemotingChannel();
+        RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.LITE_PULL_MESSAGE, null);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.addExtField("topic", "topic");
+        request.addExtField("consumerGroup", "group");
+        request.makeCustomHeaderToNet();
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+
+        Assert.assertEquals(2, result.size());
+        Assert.assertEquals("Group:group", getContext(result, ResourceType.GROUP).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.GROUP).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals("Topic:topic", getContext(result, ResourceType.TOPIC).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.TOPIC).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals(RequestCode.LITE_PULL_MESSAGE + "", getContext(result, ResourceType.TOPIC).getRpcCode());
+    }
+
+    /**
+     * BATCH_ACK_MESSAGE is the batch variant of ACK_MESSAGE; it acknowledges (permanently deletes)
+     * messages for a consumer group on a topic, carried in the request body rather than an annotated
+     * header. It must require SUB on both topic and group, exactly like ACK_MESSAGE.
+     */
+    @Test
+    public void buildRemotingBatchAckMessageRequiresTopicAndGroupSub() {
+        mockRemotingChannel();
+        BatchAck ack = new BatchAck();
+        ack.setConsumerGroup("group");
+        ack.setTopic("topic");
+        BatchAckMessageRequestBody body = new BatchAckMessageRequestBody();
+        body.setAcks(Collections.singletonList(ack));
+        RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.BATCH_ACK_MESSAGE, null);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.setBody(body.encode());
+        request.makeCustomHeaderToNet();
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+
+        Assert.assertEquals(2, result.size());
+        Assert.assertEquals("Group:group", getContext(result, ResourceType.GROUP).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.GROUP).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals("Topic:topic", getContext(result, ResourceType.TOPIC).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.TOPIC).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals(RequestCode.BATCH_ACK_MESSAGE + "", getContext(result, ResourceType.TOPIC).getRpcCode());
+    }
+
+    /**
+     * SEND_REPLY_MESSAGE produces a reply message and reuses SendMessageRequestHeader, so it must be
+     * authorized exactly like SEND_MESSAGE: PUB on the topic.
+     */
+    @Test
+    public void buildRemotingSendReplyMessageRequiresTopicPub() {
+        mockRemotingChannel();
+        SendMessageRequestHeader header = new SendMessageRequestHeader();
+        header.setTopic("topic");
+        RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.SEND_REPLY_MESSAGE, header);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.makeCustomHeaderToNet();
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+
+        Assert.assertEquals(1, result.size());
+        Assert.assertEquals("Topic:topic", result.get(0).getResource().getResourceKey());
+        Assert.assertTrue(result.get(0).getActions().containsAll(Arrays.asList(Action.PUB)));
+        Assert.assertEquals(RequestCode.SEND_REPLY_MESSAGE + "", result.get(0).getRpcCode());
+    }
+
+    /**
+     * SEND_REPLY_MESSAGE_V2 reuses SendMessageRequestHeaderV2, so it must be authorized exactly like
+     * SEND_MESSAGE_V2: PUB on the topic.
+     */
+    @Test
+    public void buildRemotingSendReplyMessageV2RequiresTopicPub() {
+        mockRemotingChannel();
+        SendMessageRequestHeaderV2 header = new SendMessageRequestHeaderV2();
+        header.setTopic("topic");
+        RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.SEND_REPLY_MESSAGE_V2, header);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.makeCustomHeaderToNet();
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+
+        Assert.assertEquals(1, result.size());
+        Assert.assertEquals("Topic:topic", result.get(0).getResource().getResourceKey());
+        Assert.assertTrue(result.get(0).getActions().containsAll(Arrays.asList(Action.PUB)));
+        Assert.assertEquals(RequestCode.SEND_REPLY_MESSAGE_V2 + "", result.get(0).getRpcCode());
+    }
+
+    /**
+     * QUERY_ASSIGNMENT returns the queue assignment for a group+topic and carries them in the body.
+     * It must require SUB on both topic and group, matching the gRPC QueryAssignmentRequest path.
+     */
+    @Test
+    public void buildRemotingQueryAssignmentRequiresTopicAndGroupSub() {
+        mockRemotingChannel();
+        QueryAssignmentRequestBody body = new QueryAssignmentRequestBody();
+        body.setTopic("topic");
+        body.setConsumerGroup("group");
+        RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.QUERY_ASSIGNMENT, null);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.setBody(body.encode());
+        request.makeCustomHeaderToNet();
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+
+        Assert.assertEquals(2, result.size());
+        Assert.assertEquals("Group:group", getContext(result, ResourceType.GROUP).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.GROUP).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals("Topic:topic", getContext(result, ResourceType.TOPIC).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.TOPIC).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals(RequestCode.QUERY_ASSIGNMENT + "", getContext(result, ResourceType.TOPIC).getRpcCode());
+    }
+
+    /**
+     * SET_MESSAGE_REQUEST_MODE changes the pull/pop consumption mode for a group+topic and carries
+     * them in the body. It must require SUB on both topic and group.
+     */
+    @Test
+    public void buildRemotingSetMessageRequestModeRequiresTopicAndGroupSub() {
+        mockRemotingChannel();
+        SetMessageRequestModeRequestBody body = new SetMessageRequestModeRequestBody();
+        body.setTopic("topic");
+        body.setConsumerGroup("group");
+        RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.SET_MESSAGE_REQUEST_MODE, null);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.setBody(body.encode());
+        request.makeCustomHeaderToNet();
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+
+        Assert.assertEquals(2, result.size());
+        Assert.assertEquals("Group:group", getContext(result, ResourceType.GROUP).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.GROUP).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals("Topic:topic", getContext(result, ResourceType.TOPIC).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.TOPIC).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals(RequestCode.SET_MESSAGE_REQUEST_MODE + "", getContext(result, ResourceType.TOPIC).getRpcCode());
+    }
+
+    /**
+     * CHECK_CLIENT_CONFIG validates a consumer's subscription (group + topic + filter) and carries
+     * them in the body. It must require SUB on both topic and group.
+     */
+    @Test
+    public void buildRemotingCheckClientConfigRequiresTopicAndGroupSub() {
+        mockRemotingChannel();
+        SubscriptionData subscriptionData = new SubscriptionData();
+        subscriptionData.setTopic("topic");
+        CheckClientRequestBody body = new CheckClientRequestBody();
+        body.setGroup("group");
+        body.setSubscriptionData(subscriptionData);
+        RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.CHECK_CLIENT_CONFIG, null);
+        request.setVersion(441);
+        request.addExtField("AccessKey", "rocketmq");
+        request.setBody(body.encode());
+        request.makeCustomHeaderToNet();
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
+
+        Assert.assertEquals(2, result.size());
+        Assert.assertEquals("Group:group", getContext(result, ResourceType.GROUP).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.GROUP).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals("Topic:topic", getContext(result, ResourceType.TOPIC).getResource().getResourceKey());
+        Assert.assertTrue(getContext(result, ResourceType.TOPIC).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals(RequestCode.CHECK_CLIENT_CONFIG + "", getContext(result, ResourceType.TOPIC).getRpcCode());
+    }
+
     private DefaultAuthorizationContext getContext(List<DefaultAuthorizationContext> contexts,
         ResourceType resourceType) {
         return contexts.stream().filter(context -> context.getResource().getResourceType() == resourceType)
             .findFirst().orElse(null);
+    }
+
+    private void mockRemotingChannel() {
+        when(channel.id()).thenReturn(mockChannelId("channel-id"));
+        when(channel.hasAttr(eq(AttributeKeys.PROXY_PROTOCOL_ADDR))).thenReturn(true);
+        when(channel.attr(eq(AttributeKeys.PROXY_PROTOCOL_ADDR))).thenReturn(mockAttribute("192.168.0.1"));
+        when(channel.hasAttr(eq(AttributeKeys.PROXY_PROTOCOL_PORT))).thenReturn(true);
+        when(channel.attr(eq(AttributeKeys.PROXY_PROTOCOL_PORT))).thenReturn(mockAttribute("1234"));
+        when(channelHandlerContext.channel()).thenReturn(channel);
     }
 
     private ChannelId mockChannelId(String channelId) {
