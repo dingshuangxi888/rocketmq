@@ -98,7 +98,6 @@ public class QueryMessageProcessorTest {
     @Test
     public void testViewMessageById() throws RemotingCommandException {
         ViewMessageRequestHeader viewMessageRequestHeader = new ViewMessageRequestHeader();
-        viewMessageRequestHeader.setTopic("topic");
         viewMessageRequestHeader.setOffset(0L);
         RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.VIEW_MESSAGE_BY_ID, viewMessageRequestHeader);
         request.makeCustomHeaderToNet();

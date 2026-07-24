@@ -169,7 +169,6 @@ public class EndTransactionProcessorTest {
 
     private EndTransactionRequestHeader createEndTransactionRequestHeader(int status, boolean isCheckMsg) {
         EndTransactionRequestHeader header = new EndTransactionRequestHeader();
-        header.setTopic("topic");
         header.setCommitLogOffset(123456789L);
         header.setFromTransactionCheck(isCheckMsg);
         header.setCommitOrRollback(status);

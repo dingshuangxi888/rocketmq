@@ -17,15 +17,16 @@
 
 package org.apache.rocketmq.remoting.protocol.header;
 
-import org.apache.rocketmq.common.action.Action;
-import org.apache.rocketmq.common.action.RocketMQAction;
-import org.apache.rocketmq.common.resource.ResourceType;
 import org.apache.rocketmq.remoting.CommandCustomHeader;
 import org.apache.rocketmq.remoting.annotation.CFNotNull;
 import org.apache.rocketmq.remoting.exception.RemotingCommandException;
-import org.apache.rocketmq.remoting.protocol.RequestCode;
 
-@RocketMQAction(value = RequestCode.GET_ALL_TOPIC_CONFIG, resource = ResourceType.TOPIC, action = Action.GET)
+/**
+ * This request targets the complete topic configuration set and does not identify a single topic.
+ *
+ * <p>This header must not declare {@code @RocketMQAction}: its fields cannot represent the typed
+ * {@code Topic:ANY + LIST} resource constructed by {@code DefaultAuthorizationContextBuilder}.
+ */
 public class GetAllTopicConfigRequestHeader implements CommandCustomHeader {
     @Override
     public void checkFields() throws RemotingCommandException {
