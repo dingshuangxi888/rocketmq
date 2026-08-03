@@ -40,6 +40,13 @@ public class UserAuthorizationHandler implements Handler<DefaultAuthorizationCon
         this.authenticationMetadataProvider = AuthenticationFactory.getMetadataProvider(config, metadataService);
     }
 
+    /**
+     * Visible for testing: allows injecting a stub metadata provider.
+     */
+    UserAuthorizationHandler(AuthenticationMetadataProvider authenticationMetadataProvider) {
+        this.authenticationMetadataProvider = authenticationMetadataProvider;
+    }
+
     @Override
     public CompletableFuture<Void> handle(DefaultAuthorizationContext context, HandlerChain<DefaultAuthorizationContext, CompletableFuture<Void>> chain) {
         if (!context.getSubject().isSubject(SubjectType.USER)) {
@@ -62,7 +69,7 @@ public class UserAuthorizationHandler implements Handler<DefaultAuthorizationCon
             if (result == null) {
                 throw new AuthorizationException("User:{} not found.", user.getUsername());
             }
-            if (user.getUserStatus() == UserStatus.DISABLE) {
+            if (result.getUserStatus() == UserStatus.DISABLE) {
                 throw new AuthenticationException("User:{} is disabled.", user.getUsername());
             }
             return result;
