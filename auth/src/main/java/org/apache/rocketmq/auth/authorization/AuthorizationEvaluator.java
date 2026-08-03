@@ -39,6 +39,9 @@ public class AuthorizationEvaluator {
         this.authorizationStrategy = AuthorizationFactory.getStrategy(authConfig, metadataService);
     }
 
+    /**
+     * Visible for testing: allows injecting a stub strategy.
+     */
     AuthorizationEvaluator(AuthorizationStrategy authorizationStrategy) {
         this.authorizationStrategy = authorizationStrategy;
     }

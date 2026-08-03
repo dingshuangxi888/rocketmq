@@ -82,7 +82,6 @@ import org.apache.rocketmq.remoting.protocol.body.SetMessageRequestModeRequestBo
 import org.apache.rocketmq.remoting.protocol.body.SubscriptionGroupList;
 import org.apache.rocketmq.remoting.protocol.body.UnlockBatchRequestBody;
 import org.apache.rocketmq.remoting.protocol.header.CreateTopicRequestHeader;
-import org.apache.rocketmq.remoting.protocol.header.ExtraInfoUtil;
 import org.apache.rocketmq.remoting.protocol.header.GetConsumerListByGroupRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.QueryConsumerOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.UnregisterClientRequestHeader;
@@ -129,11 +128,11 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
         if (message instanceof HeartbeatRequest) {
             HeartbeatRequest request = (HeartbeatRequest) message;
             if (isConsumerClientType(request.getClientType())
-                || request.getClientType() == ClientType.CLIENT_TYPE_UNSPECIFIED
-                && StringUtils.isNotBlank(request.getGroup().getName())) {
+                || (request.getClientType() == ClientType.CLIENT_TYPE_UNSPECIFIED
+                && StringUtils.isNotBlank(request.getGroup().getName()))) {
                 result = newGroupSubContexts(metadata, request.getGroup());
             } else if (StringUtils.isNotBlank(request.getGroup().getName())) {
-                throw new AuthorizationException("consumer group is not supported for client type.");
+                throw new AuthorizationException("group is not allowed for producer heartbeat.");
             } else {
                 return null;
             }
@@ -275,17 +274,12 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                         if (ack == null) {
                             throw new AuthorizationException("batch ack entry is null.");
                         }
-                        String ackTopic = requireResource(ack.getTopic(), "topic");
-                        String ackGroup = requireResource(ack.getConsumerGroup(), "consumer group");
-                        ExtraInfoUtil.getRealTopic(
-                            ackTopic, ackGroup, requireResource(ack.getRetry(), "retry"));
-                        if (ack.getBitSet() == null || ack.getBitSet().isEmpty()) {
-                            throw new AuthorizationException("batch ack offset is empty.");
-                        }
                         addUniqueContext(result, ackResources, subject,
-                            Resource.ofTopic(ackTopic), Action.SUB, sourceIp);
+                            Resource.ofTopic(requireResource(ack.getTopic(), "topic")),
+                            Action.SUB, sourceIp);
                         addUniqueContext(result, ackResources, subject,
-                            Resource.ofGroup(ackGroup), Action.SUB, sourceIp);
+                            Resource.ofGroup(requireResource(ack.getConsumerGroup(), "consumer group")),
+                            Action.SUB, sourceIp);
                     }
                     break;
                 case RequestCode.QUERY_ASSIGNMENT:

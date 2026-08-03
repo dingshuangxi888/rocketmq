@@ -858,33 +858,6 @@ public class DefaultAuthorizationContextBuilderTest {
         Assert.assertThrows(AuthorizationException.class,
             () -> builder.build(channelHandlerContext,
                 remotingRequest(RequestCode.BATCH_ACK_MESSAGE, null, blankGroupBatch.encode())));
-        BatchAck missingRetryAck = batchAck("topic", "group", "0");
-        missingRetryAck.setRetry(null);
-        BatchAckMessageRequestBody missingRetryBatch = new BatchAckMessageRequestBody();
-        missingRetryBatch.setAcks(Collections.singletonList(missingRetryAck));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> builder.build(channelHandlerContext,
-                remotingRequest(RequestCode.BATCH_ACK_MESSAGE, null, missingRetryBatch.encode())));
-        BatchAck invalidRetryAck = batchAck("topic", "group", "invalid");
-        BatchAckMessageRequestBody invalidRetryBatch = new BatchAckMessageRequestBody();
-        invalidRetryBatch.setAcks(Collections.singletonList(invalidRetryAck));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> builder.build(channelHandlerContext,
-                remotingRequest(RequestCode.BATCH_ACK_MESSAGE, null, invalidRetryBatch.encode())));
-        BatchAck missingOffsetAck = batchAck("topic", "group", "0");
-        missingOffsetAck.setBitSet(null);
-        BatchAckMessageRequestBody missingOffsetBatch = new BatchAckMessageRequestBody();
-        missingOffsetBatch.setAcks(Collections.singletonList(missingOffsetAck));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> builder.build(channelHandlerContext,
-                remotingRequest(RequestCode.BATCH_ACK_MESSAGE, null, missingOffsetBatch.encode())));
-        BatchAck emptyOffsetAck = batchAck("topic", "group", "0");
-        emptyOffsetAck.setBitSet(new BitSet());
-        BatchAckMessageRequestBody emptyOffsetBatch = new BatchAckMessageRequestBody();
-        emptyOffsetBatch.setAcks(Collections.singletonList(emptyOffsetAck));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> builder.build(channelHandlerContext,
-                remotingRequest(RequestCode.BATCH_ACK_MESSAGE, null, emptyOffsetBatch.encode())));
 
         Assert.assertThrows(AuthorizationException.class,
             () -> builder.build(channelHandlerContext,

@@ -44,9 +44,8 @@ final class AuthorizationCompatibility {
                 case RequestCode.UNREGISTER_CLIENT:
                     return isProducerUnregister(request);
                 case RequestCode.END_TRANSACTION:
-                    return isHistoricalEndTransaction(request);
                 case RequestCode.VIEW_MESSAGE_BY_ID:
-                    return isHistoricalViewMessage(request);
+                    return isHistoricalTopicAbsentRequest(request);
                 default:
                     return false;
             }
@@ -101,11 +100,10 @@ final class AuthorizationCompatibility {
             && StringUtils.isBlank(getExtField(request, "consumerGroup"));
     }
 
-    private static boolean isHistoricalEndTransaction(RemotingCommand request) {
-        return request.getExtFields() != null && StringUtils.isBlank(getExtField(request, "topic"));
-    }
-
-    private static boolean isHistoricalViewMessage(RemotingCommand request) {
+    /**
+     * Historical END_TRANSACTION and VIEW_MESSAGE_BY_ID requests carry no topic field.
+     */
+    private static boolean isHistoricalTopicAbsentRequest(RemotingCommand request) {
         return request.getExtFields() != null && StringUtils.isBlank(getExtField(request, "topic"));
     }
 

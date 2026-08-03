@@ -24,8 +24,8 @@ import org.apache.rocketmq.remoting.exception.RemotingCommandException;
 /**
  * This request targets the complete subscription-group configuration set and does not identify a single group.
  *
- * <p>This header must not declare {@code @RocketMQAction}: its fields cannot represent the typed
- * {@code Group:ANY + LIST} resource constructed by {@code DefaultAuthorizationContextBuilder}.
+ * <p>This header must not declare {@code @RocketMQAction}: it carries no resource fields, and the
+ * typed {@code Group:ANY + LIST} resource is constructed by {@code DefaultAuthorizationContextBuilder}.
  */
 public class GetAllSubscriptionGroupRequestHeader implements CommandCustomHeader {
     @Override
