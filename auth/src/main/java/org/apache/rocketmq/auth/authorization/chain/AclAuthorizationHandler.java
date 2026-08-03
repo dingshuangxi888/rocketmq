@@ -118,7 +118,12 @@ public class AclAuthorizationHandler implements Handler<DefaultAuthorizationCont
             .collect(Collectors.toList());
     }
 
-    private int comparePolicyEntries(PolicyEntry o1, PolicyEntry o2) {
+    /**
+     * Visible for testing. Orders entries by resource precision, then lets DENY win over
+     * ALLOW at the same precision. Must keep the comparator contract: equal decisions
+     * compare as 0 so that sorting stays stable and symmetric.
+     */
+    int comparePolicyEntries(PolicyEntry o1, PolicyEntry o2) {
         int compare = 0;
         Resource r1 = o1.getResource();
         Resource r2 = o2.getResource();
@@ -154,7 +159,10 @@ public class AclAuthorizationHandler implements Handler<DefaultAuthorizationCont
         // the decision deny has higher priority
         Decision d1 = o1.getDecision();
         Decision d2 = o2.getDecision();
-        return d1 == Decision.DENY ? 1 : d2 == Decision.DENY ? -1 : 0;
+        if (d1 == d2) {
+            return 0;
+        }
+        return d1 == Decision.DENY ? -1 : 1;
     }
 
     private static void throwException(DefaultAuthorizationContext context, String detail) {
