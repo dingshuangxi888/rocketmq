@@ -127,9 +127,10 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
         }
         if (message instanceof HeartbeatRequest) {
             HeartbeatRequest request = (HeartbeatRequest) message;
+            boolean isUnspecifiedConsumer = request.getClientType() == ClientType.CLIENT_TYPE_UNSPECIFIED
+                && StringUtils.isNotBlank(request.getGroup().getName());
             if (isConsumerClientType(request.getClientType())
-                || (request.getClientType() == ClientType.CLIENT_TYPE_UNSPECIFIED
-                && StringUtils.isNotBlank(request.getGroup().getName()))) {
+                || isUnspecifiedConsumer) {
                 result = newGroupSubContexts(metadata, request.getGroup());
             } else if (StringUtils.isNotBlank(request.getGroup().getName())) {
                 throw new AuthorizationException("group is not allowed for producer heartbeat.");
