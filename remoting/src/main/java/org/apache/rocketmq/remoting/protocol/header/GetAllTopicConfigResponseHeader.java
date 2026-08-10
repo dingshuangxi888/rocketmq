@@ -24,12 +24,6 @@ import org.apache.rocketmq.remoting.CommandCustomHeader;
 import org.apache.rocketmq.remoting.annotation.CFNotNull;
 import org.apache.rocketmq.remoting.exception.RemotingCommandException;
 
-/**
- * Response metadata for a complete topic-configuration listing.
- *
- * <p>This header must not declare {@code @RocketMQAction}: response metadata is not request
- * authorization metadata. The matching request is resolved by {@code DefaultAuthorizationContextBuilder}.
- */
 public class GetAllTopicConfigResponseHeader implements CommandCustomHeader {
 
     @Override

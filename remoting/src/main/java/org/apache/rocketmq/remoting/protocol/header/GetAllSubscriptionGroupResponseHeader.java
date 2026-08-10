@@ -21,12 +21,6 @@ import org.apache.rocketmq.remoting.CommandCustomHeader;
 import org.apache.rocketmq.remoting.annotation.CFNotNull;
 import org.apache.rocketmq.remoting.exception.RemotingCommandException;
 
-/**
- * Response metadata for a complete subscription-group configuration listing.
- *
- * <p>This header must not declare {@code @RocketMQAction}: response metadata is not request
- * authorization metadata. The matching request is resolved by {@code DefaultAuthorizationContextBuilder}.
- */
 public class GetAllSubscriptionGroupResponseHeader implements CommandCustomHeader {
     @Override
     public void checkFields() throws RemotingCommandException {
