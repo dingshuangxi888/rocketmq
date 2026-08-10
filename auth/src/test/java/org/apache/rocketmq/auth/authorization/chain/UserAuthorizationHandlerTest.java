@@ -16,18 +16,27 @@
  */
 package org.apache.rocketmq.auth.authorization.chain;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import org.apache.commons.collections.CollectionUtils;
 import org.apache.rocketmq.auth.authentication.enums.UserStatus;
 import org.apache.rocketmq.auth.authentication.enums.UserType;
 import org.apache.rocketmq.auth.authentication.exception.AuthenticationException;
+import org.apache.rocketmq.auth.authentication.factory.AuthenticationFactory;
+import org.apache.rocketmq.auth.authentication.manager.AuthenticationMetadataManager;
+import org.apache.rocketmq.auth.authentication.model.Subject;
 import org.apache.rocketmq.auth.authentication.model.User;
 import org.apache.rocketmq.auth.authentication.provider.AuthenticationMetadataProvider;
 import org.apache.rocketmq.auth.authorization.context.DefaultAuthorizationContext;
 import org.apache.rocketmq.auth.authorization.exception.AuthorizationException;
 import org.apache.rocketmq.auth.authorization.model.Resource;
+import org.apache.rocketmq.auth.config.AuthConfig;
+import org.apache.rocketmq.auth.helper.AuthTestHelper;
+import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.action.Action;
 import org.apache.rocketmq.common.chain.HandlerChain;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -35,76 +44,140 @@ import org.junit.Test;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class UserAuthorizationHandlerTest {
 
-    private AuthenticationMetadataProvider metadataProvider;
+    private AuthConfig authConfig;
+    private AuthenticationMetadataManager authenticationMetadataManager;
     private UserAuthorizationHandler handler;
-    private HandlerChain<DefaultAuthorizationContext, CompletableFuture<Void>> chain;
+    private HandlerChain<DefaultAuthorizationContext, CompletableFuture<Void>> nextChain;
 
     @Before
-    @SuppressWarnings("unchecked")
     public void setUp() {
-        this.metadataProvider = mock(AuthenticationMetadataProvider.class);
-        this.handler = new UserAuthorizationHandler(metadataProvider);
-        this.chain = mock(HandlerChain.class);
-        when(this.chain.handle(any())).thenReturn(CompletableFuture.completedFuture(null));
+        if (MixAll.isMac()) {
+            return;
+        }
+        this.authConfig = AuthTestHelper.createDefaultConfig();
+        this.authenticationMetadataManager = AuthenticationFactory.getMetadataManager(this.authConfig);
+        this.handler = new UserAuthorizationHandler(this.authConfig, null);
+        this.nextChain = mock(HandlerChain.class);
+        clearAllUsers();
+    }
+
+    @After
+    public void tearDown() {
+        if (MixAll.isMac()) {
+            return;
+        }
+        clearAllUsers();
+        this.authenticationMetadataManager.shutdown();
     }
 
     @Test
-    public void handleRejectsDisabledUser() {
+    public void testUserNotFoundThrows() {
+        if (MixAll.isMac()) {
+            return;
+        }
+        User noSuchUser = User.of("no_such_user", "pwd");
+        DefaultAuthorizationContext ctx = buildContext(noSuchUser, Resource.ofTopic("t1"), Action.SUB, "127.0.0.1");
+
+        AuthorizationException authorizationException = Assert.assertThrows(AuthorizationException.class, () -> {
+            try {
+                handler.handle(ctx, nextChain).join();
+            } catch (Exception e) {
+                AuthTestHelper.handleException(e);
+            }
+        });
+        Assert.assertEquals("User:no_such_user not found.", authorizationException.getMessage());
+    }
+
+    @Test
+    public void testUserDisabledThrows() {
+        if (MixAll.isMac()) {
+            return;
+        }
+        User user = User.of("disabled", "pwd");
+        authenticationMetadataManager.createUser(user).join();
+        User saved = authenticationMetadataManager.getUser("disabled").join();
+        saved.setUserStatus(UserStatus.DISABLE);
+        authenticationMetadataManager.updateUser(saved).join();
+
+        DefaultAuthorizationContext ctx = buildContext(user, Resource.ofTopic("t1"), Action.SUB, "127.0.0.1");
+
+        AuthenticationException authenticationException = Assert.assertThrows(AuthenticationException.class, () -> {
+            try {
+                handler.handle(ctx, nextChain).join();
+            } catch (Exception e) {
+                AuthTestHelper.handleException(e);
+            }
+        });
+
+        Assert.assertEquals("User:disabled is disabled.", authenticationException.getMessage());
+        verify(nextChain, never()).handle(any());
+    }
+
+    @Test
+    public void testSuperUserBypassNextChain() {
+        if (MixAll.isMac()) {
+            return;
+        }
+        User superUser = User.of("super", "pwd", UserType.SUPER);
+        authenticationMetadataManager.createUser(superUser).join();
+
+        DefaultAuthorizationContext ctx = buildContext(superUser, Resource.ofTopic("t1"), Action.SUB, "127.0.0.1");
+
+        handler.handle(ctx, nextChain).join();
+        // super user should bypass the next chain
+        verify(nextChain, never()).handle(any());
+    }
+
+    @Test
+    public void testNormalUserGoesToNextChain() {
+        if (MixAll.isMac()) {
+            return;
+        }
+        User normalUser = User.of("normal", "pwd", UserType.NORMAL);
+        authenticationMetadataManager.createUser(normalUser).join();
+
+        DefaultAuthorizationContext ctx = buildContext(normalUser, Resource.ofTopic("t1"), Action.SUB, "127.0.0.1");
+
+        when(nextChain.handle(any())).thenReturn(CompletableFuture.completedFuture(null));
+        handler.handle(ctx, nextChain).join();
+        // normal user should go to the next chain
+        verify(nextChain, times(1)).handle(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void handleRejectsDisabledUserWithAuthenticationException() {
+        AuthenticationMetadataProvider metadataProvider = mock(AuthenticationMetadataProvider.class);
+        UserAuthorizationHandler directHandler = new UserAuthorizationHandler(metadataProvider);
+        HandlerChain<DefaultAuthorizationContext, CompletableFuture<Void>> chain = mock(HandlerChain.class);
         User persisted = User.of("test");
         persisted.setUserStatus(UserStatus.DISABLE);
-        when(metadataProvider.getUser("test"))
-            .thenReturn(CompletableFuture.completedFuture(persisted));
+        when(metadataProvider.getUser("test")).thenReturn(CompletableFuture.completedFuture(persisted));
 
-        // the request subject carries no user status, only the username
+        DefaultAuthorizationContext context = DefaultAuthorizationContext.of(User.of("test"),
+            Resource.ofTopic("topic"), Action.PUB, "192.168.0.1");
         CompletionException exception = Assert.assertThrows(CompletionException.class,
-            () -> handler.handle(newContext(), chain).join());
+            () -> directHandler.handle(context, chain).join());
+
         Assert.assertTrue(exception.getCause() instanceof AuthenticationException);
         verify(chain, never()).handle(any());
     }
 
-    @Test
-    public void handleRejectsUnknownUser() {
-        when(metadataProvider.getUser("test"))
-            .thenReturn(CompletableFuture.completedFuture(null));
-
-        CompletionException exception = Assert.assertThrows(CompletionException.class,
-            () -> handler.handle(newContext(), chain).join());
-        Assert.assertTrue(exception.getCause() instanceof AuthorizationException);
-        verify(chain, never()).handle(any());
+    private DefaultAuthorizationContext buildContext(Subject subject, Resource resource, Action action, String sourceIp) {
+        return DefaultAuthorizationContext.of(subject, resource, action, sourceIp);
     }
 
-    @Test
-    public void handleContinuesChainForEnabledUser() {
-        User persisted = User.of("test");
-        persisted.setUserType(UserType.NORMAL);
-        persisted.setUserStatus(UserStatus.ENABLE);
-        when(metadataProvider.getUser("test"))
-            .thenReturn(CompletableFuture.completedFuture(persisted));
-
-        DefaultAuthorizationContext context = newContext();
-        handler.handle(context, chain).join();
-        verify(chain).handle(context);
-    }
-
-    @Test
-    public void handleAllowsSuperUserWithoutChain() {
-        User persisted = User.of("test");
-        persisted.setUserType(UserType.SUPER);
-        persisted.setUserStatus(UserStatus.ENABLE);
-        when(metadataProvider.getUser("test"))
-            .thenReturn(CompletableFuture.completedFuture(persisted));
-
-        handler.handle(newContext(), chain).join();
-        verify(chain, never()).handle(any());
-    }
-
-    private static DefaultAuthorizationContext newContext() {
-        return DefaultAuthorizationContext.of(User.of("test"),
-            Resource.ofTopic("topic"), Action.PUB, "192.168.0.1");
+    private void clearAllUsers() {
+        List<User> users = this.authenticationMetadataManager.listUser(null).join();
+        if (CollectionUtils.isEmpty(users)) {
+            return;
+        }
+        users.forEach(user -> this.authenticationMetadataManager.deleteUser(user.getUsername()).join());
     }
 }

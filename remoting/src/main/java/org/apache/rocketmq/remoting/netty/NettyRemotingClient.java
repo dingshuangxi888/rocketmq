@@ -16,8 +16,8 @@
  */
 package org.apache.rocketmq.remoting.netty;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.TypeReference;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.TypeReference;
 import com.google.common.base.Stopwatch;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
@@ -40,35 +40,12 @@ import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.resolver.NoopAddressResolverGroup;
+import io.netty.util.AttributeKey;
 import io.netty.util.HashedWheelTimer;
 import io.netty.util.Timeout;
 import io.netty.util.TimerTask;
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.SocketAddress;
-import java.security.cert.CertificateException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.Pair;
 import org.apache.rocketmq.common.ThreadFactoryImpl;
@@ -91,10 +68,38 @@ import org.apache.rocketmq.remoting.protocol.RequestCode;
 import org.apache.rocketmq.remoting.protocol.ResponseCode;
 import org.apache.rocketmq.remoting.proxy.SocksProxyConfig;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.security.cert.CertificateException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
 import static org.apache.rocketmq.remoting.common.RemotingHelper.convertChannelFutureToCompletableFuture;
 
 public class NettyRemotingClient extends NettyRemotingAbstract implements RemotingClient {
     private static final Logger LOGGER = LoggerFactory.getLogger(LoggerName.ROCKETMQ_REMOTING_NAME);
+
+    private static final AttributeKey<ChannelWrapper> CHANNEL_WRAPPER_ATTRIBUTE_KEY = AttributeKey.valueOf(
+        "channelWrapper");
 
     private static final long LOCK_TIMEOUT_MILLIS = 3000;
     private static final long MIN_CLOSE_TIMEOUT_MILLIS = 100;
@@ -106,7 +111,6 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
     private final Map<String /* cidr */, SocksProxyConfig /* proxy */> proxyMap = new HashMap<>();
     private final ConcurrentHashMap<String /* cidr */, Bootstrap> bootstrapMap = new ConcurrentHashMap<>();
     private final ConcurrentMap<String /* addr */, ChannelWrapper> channelTables = new ConcurrentHashMap<>();
-    private final ConcurrentMap<Channel, ChannelWrapper> channelWrapperTables = new ConcurrentHashMap<>();
 
     private final HashedWheelTimer timer = new HashedWheelTimer(r -> new Thread(r, "ClientHouseKeepingService"));
 
@@ -176,8 +180,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
     }
 
     private static int initValueIndex() {
-        Random r = new Random();
-        return r.nextInt(999);
+        return ThreadLocalRandom.current().nextInt(999);
     }
 
     private void loadSocksProxyJson() {
@@ -381,7 +384,6 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                 channel.getValue().close();
             }
 
-            this.channelWrapperTables.clear();
             this.channelTables.clear();
 
             this.eventLoopGroupWorker.shutdownGracefully();
@@ -439,7 +441,8 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                     }
 
                     if (removeItemFromTable) {
-                        ChannelWrapper channelWrapper = this.channelWrapperTables.remove(channel);
+                        ChannelWrapper channelWrapper =
+                            RemotingHelper.getAttributeValue(CHANNEL_WRAPPER_ATTRIBUTE_KEY, channel);
                         if (channelWrapper != null && channelWrapper.tryClose(channel)) {
                             this.channelTables.remove(addrRemote);
                         }
@@ -487,7 +490,8 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                     }
 
                     if (removeItemFromTable) {
-                        ChannelWrapper channelWrapper = this.channelWrapperTables.remove(channel);
+                        ChannelWrapper channelWrapper =
+                            RemotingHelper.getAttributeValue(CHANNEL_WRAPPER_ATTRIBUTE_KEY, channel);
                         if (channelWrapper != null && channelWrapper.tryClose(channel)) {
                             this.channelTables.remove(addrRemote);
                         }
@@ -724,7 +728,6 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
         LOGGER.info("createChannel: begin to connect remote host[{}] asynchronously", addr);
         ChannelWrapper cw = new ChannelWrapper(addr, channelFuture);
         this.channelTables.put(addr, cw);
-        this.channelWrapperTables.put(channelFuture.channel(), cw);
         return cw;
     }
 
@@ -831,17 +834,12 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
             if (response.getCode() == ResponseCode.GO_AWAY) {
                 if (nettyClientConfig.isEnableReconnectForGoAway()) {
                     LOGGER.info("Receive go away from channelId={}, channel={}", channel.id(), channel);
-                    ChannelWrapper channelWrapper = channelWrapperTables.computeIfPresent(channel, (channel0, channelWrapper0) -> {
-                        try {
-                            if (channelWrapper0.reconnect(channel0)) {
-                                LOGGER.info("Receive go away from channelId={}, channel={}, recreate the channelId={}", channel0.id(), channel0, channelWrapper0.getChannel().id());
-                                channelWrapperTables.put(channelWrapper0.getChannel(), channelWrapper0);
-                            }
-                        } catch (Throwable t) {
-                            LOGGER.error("Channel {} reconnect error", channelWrapper0, t);
-                        }
-                        return channelWrapper0;
-                    });
+                    ChannelWrapper channelWrapper = RemotingHelper.getAttributeValue(CHANNEL_WRAPPER_ATTRIBUTE_KEY,
+                        channel);
+                    if (channelWrapper != null && channelWrapper.reconnect(channel)) {
+                        LOGGER.info("Receive go away from channelId={}, channel={}, recreate the channelId={}",
+                            channel.id(), channel, channelWrapper.getChannel().id());
+                    }
                     if (channelWrapper != null && !channelWrapper.isWrapperOf(channel)) {
                         RemotingCommand retryRequest = RemotingCommand.createRequestCommand(request.getCode(), request.readCustomHeader());
                         retryRequest.setBody(request.getBody());
@@ -1006,6 +1004,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
             this.channelFuture = channelFuture;
             this.lastResponseTime = System.currentTimeMillis();
             this.channelAddress = address;
+            RemotingHelper.setPropertyToAttr(channelFuture.channel(), CHANNEL_WRAPPER_ATTRIBUTE_KEY, this);
         }
 
         public boolean isOK() {
@@ -1055,10 +1054,13 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                     if (isWrapperOf(channel)) {
                         channelToClose = channelFuture;
                         channelFuture = doConnect(channelAddress);
+                        RemotingHelper.setPropertyToAttr(channelFuture.channel(), CHANNEL_WRAPPER_ATTRIBUTE_KEY, this);
                         return true;
                     } else {
                         LOGGER.warn("channelWrapper has reconnect, so do nothing, now channelId={}, input channelId={}",getChannel().id(), channel.id());
                     }
+                } catch (Throwable t) {
+                    LOGGER.error("ChannelWrapper {} reconnect error", this, t);
                 } finally {
                     lock.writeLock().unlock();
                 }

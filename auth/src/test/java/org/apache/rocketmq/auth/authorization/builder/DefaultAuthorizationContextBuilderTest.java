@@ -71,6 +71,8 @@ import org.apache.rocketmq.remoting.protocol.body.BatchAck;
 import org.apache.rocketmq.remoting.protocol.body.BatchAckMessageRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.CheckClientRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.CreateTopicListRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.DeleteSubscriptionGroupListRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.DeleteTopicListRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.LockBatchRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.QueryAssignmentRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.SetMessageRequestModeRequestBody;
@@ -1266,6 +1268,33 @@ public class DefaultAuthorizationContextBuilderTest {
                 remotingRequest(requestCode, null, null));
             assertResourceOrder(result, "Cluster:DefaultCluster");
             assertActions(result, "Cluster:DefaultCluster", Action.UPDATE);
+        }
+    }
+
+    @Test
+    public void buildBatchDeleteRequests() {
+        mockRemotingChannel();
+
+        DeleteTopicListRequestBody topicListBody = new DeleteTopicListRequestBody();
+        topicListBody.setTopicList(Arrays.asList("topicA", "topicB", "", "  "));
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.DELETE_TOPIC_IN_BROKER_LIST, null, topicListBody.encode()));
+        assertResourceOrder(result, "Topic:topicA", "Topic:topicB");
+        assertActions(result, "Topic:topicA", Action.DELETE);
+        assertActions(result, "Topic:topicB", Action.DELETE);
+        for (DefaultAuthorizationContext context : result) {
+            Assert.assertEquals(String.valueOf(RequestCode.DELETE_TOPIC_IN_BROKER_LIST), context.getRpcCode());
+        }
+
+        DeleteSubscriptionGroupListRequestBody groupListBody = new DeleteSubscriptionGroupListRequestBody();
+        groupListBody.setGroupNameList(Arrays.asList("groupX", "groupY"));
+        result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.DELETE_SUBSCRIPTION_GROUP_LIST, null, groupListBody.encode()));
+        assertResourceOrder(result, "Group:groupX", "Group:groupY");
+        assertActions(result, "Group:groupX", Action.DELETE);
+        assertActions(result, "Group:groupY", Action.DELETE);
+        for (DefaultAuthorizationContext context : result) {
+            Assert.assertEquals(String.valueOf(RequestCode.DELETE_SUBSCRIPTION_GROUP_LIST), context.getRpcCode());
         }
     }
 

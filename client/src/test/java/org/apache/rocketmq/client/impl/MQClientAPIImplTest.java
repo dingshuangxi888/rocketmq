@@ -16,6 +16,7 @@
  */
 package org.apache.rocketmq.client.impl;
 
+import com.alibaba.fastjson2.JSON;
 import org.apache.rocketmq.client.ClientConfig;
 import org.apache.rocketmq.client.consumer.AckCallback;
 import org.apache.rocketmq.client.consumer.AckResult;
@@ -34,6 +35,7 @@ import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.apache.rocketmq.client.producer.SendCallback;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.client.producer.SendStatus;
+import org.apache.rocketmq.common.CheckRocksdbCqWriteResult;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.ObjectCreator;
 import org.apache.rocketmq.common.Pair;
@@ -539,7 +541,7 @@ public class MQClientAPIImplTest {
             message.setBody("body".getBytes());
             message.setTopic(topic);
             message.putUserProperty("key", "value");
-            message.putUserProperty(MessageConst.PROPERTY_INNER_MULTI_DISPATCH, lmqTopic);
+            MessageAccessor.putProperty(message, MessageConst.PROPERTY_INNER_MULTI_DISPATCH, lmqTopic);
             message.getProperties().put(MessageConst.PROPERTY_INNER_MULTI_QUEUE_OFFSET, String.valueOf(0));
             response.setBody(MessageDecoder.encode(message, false));
             responseFuture.setResponseCommand(response);
@@ -1363,6 +1365,68 @@ public class MQClientAPIImplTest {
     }
 
     @Test
+    public void testDeleteTopicInBrokerList() throws RemotingException, InterruptedException, MQClientException {
+        mockInvokeSync();
+        mqClientAPI.deleteTopicInBrokerList(defaultBrokerAddr, java.util.Arrays.asList("topicA", "topicB"), defaultTimeout);
+    }
+
+    @Test(expected = MQClientException.class)
+    public void testDeleteTopicInBrokerListFail() throws RemotingException, InterruptedException, MQClientException {
+        when(response.getCode()).thenReturn(ResponseCode.SYSTEM_ERROR);
+        when(response.getRemark()).thenReturn("error");
+        when(remotingClient.invokeSync(any(), any(), anyLong())).thenReturn(response);
+        mqClientAPI.deleteTopicInBrokerList(defaultBrokerAddr, java.util.Arrays.asList("topicA"), defaultTimeout);
+    }
+
+    @Test(expected = MQClientException.class)
+    public void testDeleteTopicInBrokerListNullResponse() throws RemotingException, InterruptedException, MQClientException {
+        when(remotingClient.invokeSync(any(), any(), anyLong())).thenReturn(null);
+        mqClientAPI.deleteTopicInBrokerList(defaultBrokerAddr, java.util.Arrays.asList("topicA"), defaultTimeout);
+    }
+
+    @Test
+    public void testDeleteTopicInBrokerListVerifyRequest() throws Exception {
+        mockInvokeSync();
+        org.mockito.ArgumentCaptor<RemotingCommand> captor = org.mockito.ArgumentCaptor.forClass(RemotingCommand.class);
+        mqClientAPI.deleteTopicInBrokerList(defaultBrokerAddr, java.util.Arrays.asList("t1", "t2"), defaultTimeout);
+        org.mockito.Mockito.verify(remotingClient).invokeSync(any(), captor.capture(), anyLong());
+        RemotingCommand captured = captor.getValue();
+        assertEquals(RequestCode.DELETE_TOPIC_IN_BROKER_LIST, captured.getCode());
+        assertNotNull(captured.getBody());
+    }
+
+    @Test
+    public void testDeleteSubscriptionGroupList() throws RemotingException, InterruptedException, MQClientException {
+        mockInvokeSync();
+        mqClientAPI.deleteSubscriptionGroupList(defaultBrokerAddr, java.util.Arrays.asList("groupA", "groupB"), true, defaultTimeout);
+    }
+
+    @Test(expected = MQClientException.class)
+    public void testDeleteSubscriptionGroupListFail() throws RemotingException, InterruptedException, MQClientException {
+        when(response.getCode()).thenReturn(ResponseCode.SYSTEM_ERROR);
+        when(response.getRemark()).thenReturn("error");
+        when(remotingClient.invokeSync(any(), any(), anyLong())).thenReturn(response);
+        mqClientAPI.deleteSubscriptionGroupList(defaultBrokerAddr, java.util.Arrays.asList("groupA"), false, defaultTimeout);
+    }
+
+    @Test(expected = MQClientException.class)
+    public void testDeleteSubscriptionGroupListNullResponse() throws RemotingException, InterruptedException, MQClientException {
+        when(remotingClient.invokeSync(any(), any(), anyLong())).thenReturn(null);
+        mqClientAPI.deleteSubscriptionGroupList(defaultBrokerAddr, java.util.Arrays.asList("groupA"), true, defaultTimeout);
+    }
+
+    @Test
+    public void testDeleteSubscriptionGroupListVerifyRequest() throws Exception {
+        mockInvokeSync();
+        org.mockito.ArgumentCaptor<RemotingCommand> captor = org.mockito.ArgumentCaptor.forClass(RemotingCommand.class);
+        mqClientAPI.deleteSubscriptionGroupList(defaultBrokerAddr, java.util.Arrays.asList("g1", "g2"), true, defaultTimeout);
+        org.mockito.Mockito.verify(remotingClient).invokeSync(any(), captor.capture(), anyLong());
+        RemotingCommand captured = captor.getValue();
+        assertEquals(RequestCode.DELETE_SUBSCRIPTION_GROUP_LIST, captured.getCode());
+        assertNotNull(captured.getBody());
+    }
+
+    @Test
     public void assertGetKVConfigValue() throws RemotingException, InterruptedException, MQClientException {
         mockInvokeSync();
         GetKVConfigResponseHeader responseHeader = mock(GetKVConfigResponseHeader.class);
@@ -2029,6 +2093,22 @@ public class MQClientAPIImplTest {
         public NettyClientConfig getNettyClientConfig() {
             return nettyClientConfig;
         }
+    }
+
+    @Test
+    public void testCheckRocksdbCqWriteProgress() throws Exception {
+        RemotingCommand response = RemotingCommand.createResponseCommand(ResponseCode.SUCCESS, "Success");
+        CheckRocksdbCqWriteResult expectedResult = new CheckRocksdbCqWriteResult();
+        expectedResult.setCheckStatus(CheckRocksdbCqWriteResult.CheckStatus.CHECK_OK.getValue());
+        response.setBody(JSON.toJSONString(expectedResult).getBytes());
+
+        when(remotingClient.invokeSync(any(String.class), any(RemotingCommand.class), any(Long.class)))
+                .thenReturn(response);
+
+        CheckRocksdbCqWriteResult result = mqClientAPI.checkRocksdbCqWriteProgress(
+                "brokerAddr", "testTopic", 12345L, 3000L);
+
+        assertEquals(CheckRocksdbCqWriteResult.CheckStatus.CHECK_OK.getValue(), result.getCheckStatus());
     }
 
     private Properties createProperties() {

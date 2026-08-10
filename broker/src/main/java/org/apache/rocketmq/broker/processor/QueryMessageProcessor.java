@@ -83,11 +83,6 @@ public class QueryMessageProcessor implements NettyRequestProcessor {
         return null;
     }
 
-    @Override
-    public boolean rejectRequest() {
-        return false;
-    }
-
     public RemotingCommand queryMessage(ChannelHandlerContext ctx, RemotingCommand request)
         throws RemotingCommandException {
         final RemotingCommand response =
@@ -99,16 +94,19 @@ public class QueryMessageProcessor implements NettyRequestProcessor {
                 .decodeCommandCustomHeader(QueryMessageRequestHeader.class);
 
         response.setOpaque(request.getOpaque());
-
-        String isUniqueKey = request.getExtFields().get(MixAll.UNIQUE_MSG_QUERY_FLAG);
-        if (isUniqueKey != null && isUniqueKey.equals("true")) {
-            requestHeader.setMaxNum(this.brokerController.getMessageStoreConfig().getDefaultQueryMaxNum());
+        String indexType = requestHeader.getIndexType();
+        String lastKey = requestHeader.getLastKey();
+        String isUniqueKey = null;
+        if (null != request.getExtFields()) {
+            isUniqueKey = request.getExtFields().get(MixAll.UNIQUE_MSG_QUERY_FLAG);
         }
-
-        final QueryMessageResult queryMessageResult =
-            this.brokerController.getMessageStore().queryMessage(requestHeader.getTopic(),
-                requestHeader.getKey(), requestHeader.getMaxNum(), requestHeader.getBeginTimestamp(),
-                requestHeader.getEndTimestamp());
+        if (!StringUtils.isEmpty(isUniqueKey) && Boolean.parseBoolean(isUniqueKey)) {
+            requestHeader.setMaxNum(this.brokerController.getMessageStoreConfig().getDefaultQueryMaxNum());
+            indexType = MessageConst.INDEX_UNIQUE_TYPE;
+        } else if (StringUtils.isEmpty(indexType)) {
+            indexType = MessageConst.INDEX_KEY_TYPE;
+        }
+        final QueryMessageResult queryMessageResult = this.brokerController.getMessageStore().queryMessage(requestHeader.getTopic(), requestHeader.getKey(), requestHeader.getMaxNum(), requestHeader.getBeginTimestamp(), requestHeader.getEndTimestamp(), indexType, lastKey);
         assert queryMessageResult != null;
 
         responseHeader.setIndexLastUpdatePhyoffset(queryMessageResult.getIndexLastUpdatePhyoffset());
