@@ -16,10 +16,7 @@
  */
 package org.apache.rocketmq.auth.authentication.strategy;
 
-import java.util.HashSet;
-import java.util.Set;
 import java.util.function.Supplier;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.auth.authentication.context.AuthenticationContext;
 import org.apache.rocketmq.auth.authentication.exception.AuthenticationException;
 import org.apache.rocketmq.auth.authentication.factory.AuthenticationFactory;
@@ -30,7 +27,6 @@ import org.apache.rocketmq.common.utils.ExceptionUtils;
 public abstract class AbstractAuthenticationStrategy implements AuthenticationStrategy {
 
     protected final AuthConfig authConfig;
-    protected final Set<String> authenticationWhiteSet = new HashSet<>();
     protected final AuthenticationProvider<AuthenticationContext> authenticationProvider;
 
     public AbstractAuthenticationStrategy(AuthConfig authConfig, Supplier<?> metadataService) {
@@ -39,25 +35,16 @@ public abstract class AbstractAuthenticationStrategy implements AuthenticationSt
         if (this.authenticationProvider != null) {
             this.authenticationProvider.initialize(authConfig, metadataService);
         }
-        if (StringUtils.isNotBlank(authConfig.getAuthenticationWhitelist())) {
-            String[] whitelist = StringUtils.split(authConfig.getAuthenticationWhitelist(), ",");
-            for (String rpcCode : whitelist) {
-                this.authenticationWhiteSet.add(StringUtils.trim(rpcCode));
-            }
-        }
     }
 
     protected void doEvaluate(AuthenticationContext context) {
         if (context == null) {
             return;
         }
-        if (!authConfig.isAuthenticationEnabled()) {
+        if (!authConfig.isAuthenticationRequired(context.getRpcCode())) {
             return;
         }
         if (this.authenticationProvider == null) {
-            return;
-        }
-        if (this.authenticationWhiteSet.contains(context.getRpcCode())) {
             return;
         }
         try {

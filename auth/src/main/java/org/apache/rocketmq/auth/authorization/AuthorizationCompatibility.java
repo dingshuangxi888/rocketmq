@@ -65,6 +65,9 @@ final class AuthorizationCompatibility {
         if (request instanceof TelemetryCommand) {
             TelemetryCommand telemetry = (TelemetryCommand) request;
             switch (telemetry.getCommandCase()) {
+                case SETTINGS:
+                    return telemetry.getSettings().hasPublishing()
+                        && telemetry.getSettings().getPublishing().getTopicsCount() == 0;
                 case THREAD_STACK_TRACE:
                 case VERIFY_MESSAGE_RESULT:
                     return true;

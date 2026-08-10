@@ -30,6 +30,8 @@ import org.apache.rocketmq.remoting.protocol.heartbeat.ProducerData;
 import org.junit.Assert;
 import org.junit.Test;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
+
 public class AuthorizationPipelineTest {
 
     @Test
@@ -42,7 +44,7 @@ public class AuthorizationPipelineTest {
         RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.HEART_BEAT, null);
         request.setBody(heartbeatData.encode());
 
-        pipeline.execute(null, request);
+        assertThatCode(() -> pipeline.execute(null, request)).doesNotThrowAnyException();
     }
 
     @Test

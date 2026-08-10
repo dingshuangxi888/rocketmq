@@ -16,6 +16,8 @@
  */
 package org.apache.rocketmq.auth.config;
 
+import org.apache.commons.lang3.StringUtils;
+
 public class AuthConfig implements Cloneable {
 
     private String configName;
@@ -109,6 +111,21 @@ public class AuthConfig implements Cloneable {
 
     public void setAuthenticationEnabled(boolean authenticationEnabled) {
         this.authenticationEnabled = authenticationEnabled;
+    }
+
+    public boolean isAuthenticationRequired(String rpcCode) {
+        if (!authenticationEnabled) {
+            return false;
+        }
+        if (StringUtils.isBlank(authenticationWhitelist)) {
+            return true;
+        }
+        for (String whitelistEntry : StringUtils.split(authenticationWhitelist, ",")) {
+            if (StringUtils.equals(StringUtils.trim(whitelistEntry), rpcCode)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public String getAuthenticationProvider() {

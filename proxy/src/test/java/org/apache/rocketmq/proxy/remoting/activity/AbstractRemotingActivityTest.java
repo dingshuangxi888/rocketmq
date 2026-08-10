@@ -23,6 +23,8 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import java.util.concurrent.CompletableFuture;
 import org.apache.rocketmq.acl.common.AclException;
+import org.apache.rocketmq.auth.authentication.exception.AuthenticationException;
+import org.apache.rocketmq.auth.authorization.exception.AuthorizationException;
 import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.common.MQVersion;
@@ -182,6 +184,31 @@ public class AbstractRemotingActivityTest extends InitConfigTest {
         assertThat(remotingCommand).isNull();
         verify(ctx, times(1)).writeAndFlush(captor.capture());
         assertThat(captor.getValue().getCode()).isEqualTo(ResponseCode.NO_PERMISSION);
+    }
+
+    @Test
+    public void testRequestAcl2Exceptions() throws Exception {
+        ArgumentCaptor<RemotingCommand> captor = ArgumentCaptor.forClass(RemotingCommand.class);
+        String brokerName = "broker";
+        String remark = "exception";
+        CompletableFuture<RemotingCommand> authenticationFuture = new CompletableFuture<>();
+        authenticationFuture.completeExceptionally(new AuthenticationException(remark));
+        CompletableFuture<RemotingCommand> authorizationFuture = new CompletableFuture<>();
+        authorizationFuture.completeExceptionally(new AuthorizationException(remark));
+        when(messagingProcessorMock.request(any(), eq(brokerName), any(), anyLong()))
+            .thenReturn(authenticationFuture, authorizationFuture);
+
+        for (int i = 0; i < 2; i++) {
+            RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.PULL_MESSAGE, null);
+            request.addExtField(AbstractRemotingActivity.BROKER_NAME_FIELD, brokerName);
+            assertThat(remotingActivity.request(ctx, request, null, 10000)).isNull();
+        }
+
+        verify(ctx, times(2)).writeAndFlush(captor.capture());
+        assertThat(captor.getAllValues()).allSatisfy(response -> {
+            assertThat(response.getCode()).isEqualTo(ResponseCode.NO_PERMISSION);
+            assertThat(response.getRemark()).isEqualTo(remark);
+        });
     }
 
     @Test

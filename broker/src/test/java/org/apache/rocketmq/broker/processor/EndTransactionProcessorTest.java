@@ -52,6 +52,7 @@ import org.mockito.junit.MockitoJUnitRunner;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
@@ -154,6 +155,18 @@ public class EndTransactionProcessorTest {
         assertThat(response.getCode()).isEqualTo(ResponseCode.ILLEGAL_OPERATION);
     }
 
+    @Test
+    public void testProcessRequestRequiresTopic() {
+        EndTransactionRequestHeader header = createEndTransactionRequestHeader(
+            MessageSysFlag.TRANSACTION_COMMIT_TYPE, false);
+        header.setTopic(null);
+        RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.END_TRANSACTION, header);
+        request.makeCustomHeaderToNet();
+
+        assertThatThrownBy(() -> endTransactionProcessor.processRequest(handlerContext, request))
+            .isInstanceOf(RemotingCommandException.class);
+    }
+
     private MessageExt createDefaultMessageExt() {
         MessageExt messageExt = new MessageExt();
         messageExt.setMsgId("12345678");
@@ -169,6 +182,7 @@ public class EndTransactionProcessorTest {
 
     private EndTransactionRequestHeader createEndTransactionRequestHeader(int status, boolean isCheckMsg) {
         EndTransactionRequestHeader header = new EndTransactionRequestHeader();
+        header.setTopic(TOPIC);
         header.setCommitLogOffset(123456789L);
         header.setFromTransactionCheck(isCheckMsg);
         header.setCommitOrRollback(status);

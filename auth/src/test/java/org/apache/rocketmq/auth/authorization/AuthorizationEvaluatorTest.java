@@ -19,7 +19,9 @@ package org.apache.rocketmq.auth.authorization;
 import apache.rocketmq.v2.ClientType;
 import apache.rocketmq.v2.HeartbeatRequest;
 import apache.rocketmq.v2.NotifyClientTerminationRequest;
+import apache.rocketmq.v2.Publishing;
 import apache.rocketmq.v2.QueryRouteRequest;
+import apache.rocketmq.v2.Settings;
 import apache.rocketmq.v2.TelemetryCommand;
 import apache.rocketmq.v2.ThreadStackTrace;
 import apache.rocketmq.v2.VerifyMessageResult;
@@ -584,6 +586,14 @@ public class AuthorizationEvaluatorTest {
         requestEvaluator.evaluate(TelemetryCommand.newBuilder()
             .setVerifyMessageResult(VerifyMessageResult.getDefaultInstance())
             .build(), Collections.emptyList());
+        requestEvaluator.evaluate(TelemetryCommand.newBuilder()
+            .setSettings(Settings.newBuilder().setPublishing(Publishing.getDefaultInstance()))
+            .build(), Collections.emptyList());
+        Assert.assertThrows(AuthorizationException.class,
+            () -> requestEvaluator.evaluate(TelemetryCommand.newBuilder()
+                .setSettings(Settings.newBuilder().setPublishing(Publishing.newBuilder()
+                    .addTopics(apache.rocketmq.v2.Resource.newBuilder().setName("topic"))))
+                .build(), Collections.emptyList()));
         Assert.assertThrows(AuthorizationException.class,
             () -> requestEvaluator.evaluate(TelemetryCommand.getDefaultInstance(), Collections.emptyList()));
         Assert.assertThrows(AuthorizationException.class,

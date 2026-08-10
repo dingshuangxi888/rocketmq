@@ -31,6 +31,7 @@ import org.apache.rocketmq.proxy.processor.MessagingProcessor;
 import org.junit.Assert;
 import org.junit.Test;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.mock;
 
 public class AuthorizationPipelineTest {
@@ -42,7 +43,8 @@ public class AuthorizationPipelineTest {
             .setClientType(ClientType.PRODUCER)
             .build();
 
-        pipeline.execute(ProxyContext.create(), new Metadata(), request);
+        assertThatCode(() -> pipeline.execute(ProxyContext.create(), new Metadata(), request))
+            .doesNotThrowAnyException();
     }
 
     @Test
