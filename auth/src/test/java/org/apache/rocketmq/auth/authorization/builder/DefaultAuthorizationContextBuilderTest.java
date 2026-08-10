@@ -71,9 +71,11 @@ import org.apache.rocketmq.remoting.protocol.body.BatchAck;
 import org.apache.rocketmq.remoting.protocol.body.BatchAckMessageRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.CheckClientRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.CreateTopicListRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.LockBatchRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.QueryAssignmentRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.SetMessageRequestModeRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.SubscriptionGroupList;
+import org.apache.rocketmq.remoting.protocol.body.UnlockBatchRequestBody;
 import org.apache.rocketmq.remoting.protocol.header.ConsumerSendMsgBackRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.CreateTopicRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.CreateUserRequestHeader;
@@ -91,6 +93,7 @@ import org.apache.rocketmq.remoting.protocol.header.SendMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.SendMessageRequestHeaderV2;
 import org.apache.rocketmq.remoting.protocol.header.UnregisterClientRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.UpdateConsumerOffsetRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.ViewMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.heartbeat.ConsumerData;
 import org.apache.rocketmq.remoting.protocol.heartbeat.HeartbeatData;
 import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
@@ -387,8 +390,9 @@ public class DefaultAuthorizationContextBuilderTest {
         request.setVersion(441);
         request.addExtField("AccessKey", "rocketmq");
         request.makeCustomHeaderToNet();
-        result = builder.build(channelHandlerContext, request);
-        Assert.assertEquals(0, result.size());
+        RemotingCommand endTransactionWithoutTopic = request;
+        Assert.assertThrows(AuthorizationException.class,
+            () -> builder.build(channelHandlerContext, endTransactionWithoutTopic));
 
         ConsumerSendMsgBackRequestHeader consumerSendMsgBackRequestHeader = new ConsumerSendMsgBackRequestHeader();
         consumerSendMsgBackRequestHeader.setGroup("group");
@@ -556,6 +560,96 @@ public class DefaultAuthorizationContextBuilderTest {
         Assert.assertEquals(RequestCode.GET_BROKER_CONFIG + "", result.get(0).getRpcCode());
     }
 
+    @Test
+    public void rejectBlankResourcesForExistingRemotingRequests() {
+        mockRemotingChannel();
+
+        int[] topicCodes = {
+            RequestCode.GET_ROUTEINFO_BY_TOPIC,
+            RequestCode.SEND_MESSAGE,
+            RequestCode.RECALL_MESSAGE,
+            RequestCode.QUERY_MESSAGE
+        };
+        for (int requestCode : topicCodes) {
+            RemotingCommand request = remotingRequest(requestCode, null, null);
+            request.addExtField("topic", " ");
+            Assert.assertThrows(AuthorizationException.class,
+                () -> builder.build(channelHandlerContext, request));
+        }
+
+        int[] compactTopicCodes = {
+            RequestCode.SEND_MESSAGE_V2,
+            RequestCode.SEND_BATCH_MESSAGE
+        };
+        for (int requestCode : compactTopicCodes) {
+            RemotingCommand request = remotingRequest(requestCode, null, null);
+            request.addExtField("b", " ");
+            Assert.assertThrows(AuthorizationException.class,
+                () -> builder.build(channelHandlerContext, request));
+        }
+
+        RemotingCommand sendBackRequest = remotingRequest(RequestCode.CONSUMER_SEND_MSG_BACK, null, null);
+        sendBackRequest.addExtField("group", " ");
+        Assert.assertThrows(AuthorizationException.class,
+            () -> builder.build(channelHandlerContext, sendBackRequest));
+
+        GetConsumerListByGroupRequestHeader listHeader = new GetConsumerListByGroupRequestHeader();
+        listHeader.setConsumerGroup(" ");
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.GET_CONSUMER_LIST_BY_GROUP, listHeader, null)));
+
+        QueryConsumerOffsetRequestHeader queryOffsetHeader = new QueryConsumerOffsetRequestHeader();
+        queryOffsetHeader.setTopic(" ");
+        queryOffsetHeader.setConsumerGroup("group");
+        queryOffsetHeader.setQueueId(0);
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.QUERY_CONSUMER_OFFSET, queryOffsetHeader, null)));
+        queryOffsetHeader.setTopic("topic");
+        queryOffsetHeader.setConsumerGroup(" ");
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.QUERY_CONSUMER_OFFSET, queryOffsetHeader, null)));
+
+        UpdateConsumerOffsetRequestHeader updateOffsetHeader = new UpdateConsumerOffsetRequestHeader();
+        updateOffsetHeader.setTopic(" ");
+        updateOffsetHeader.setConsumerGroup("group");
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.UPDATE_CONSUMER_OFFSET, updateOffsetHeader, null)));
+        updateOffsetHeader.setTopic("topic");
+        updateOffsetHeader.setConsumerGroup(" ");
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.UPDATE_CONSUMER_OFFSET, updateOffsetHeader, null)));
+
+        LockBatchRequestBody lockBody = new LockBatchRequestBody();
+        lockBody.setConsumerGroup(" ");
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.LOCK_BATCH_MQ, null, lockBody.encode())));
+        lockBody.setConsumerGroup("group");
+        lockBody.setMqSet(Collections.singleton(
+            new org.apache.rocketmq.common.message.MessageQueue(" ", "broker-a", 0)));
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.LOCK_BATCH_MQ, null, lockBody.encode())));
+
+        UnlockBatchRequestBody unlockBody = new UnlockBatchRequestBody();
+        unlockBody.setConsumerGroup(" ");
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.UNLOCK_BATCH_MQ, null, unlockBody.encode())));
+        unlockBody.setConsumerGroup("group");
+        unlockBody.setMqSet(Collections.singleton(
+            new org.apache.rocketmq.common.message.MessageQueue(" ", "broker-a", 0)));
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.UNLOCK_BATCH_MQ, null, unlockBody.encode())));
+
+        PopMessageRequestHeader popHeader = new PopMessageRequestHeader();
+        popHeader.setConsumerGroup("group");
+        popHeader.setTopic(" ");
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.POP_MESSAGE, popHeader, null)));
+        popHeader.setConsumerGroup(" ");
+        popHeader.setTopic("topic");
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.POP_MESSAGE, popHeader, null)));
+    }
+
     /**
      * Verifies that annotation-based remoting headers produce the expected authorization contexts
      * after RequestHeaderRegistry initialization.
@@ -695,11 +789,19 @@ public class DefaultAuthorizationContextBuilderTest {
         assertActions(result, "Group:liteGroup", Action.SUB);
 
         litePullHeader.setTopic("%RETRY%retryGroup");
+        litePullHeader.setConsumerGroup("retryGroup");
         result = builder.build(channelHandlerContext,
             remotingRequest(RequestCode.LITE_PULL_MESSAGE, litePullHeader, null));
-        assertResourceSet(result, "Topic:%RETRY%retryGroup", "Group:liteGroup");
-        assertActions(result, "Topic:%RETRY%retryGroup", Action.SUB);
-        assertActions(result, "Group:liteGroup", Action.SUB);
+        assertResourceOrder(result, "Group:retryGroup");
+        assertActions(result, "Group:retryGroup", Action.SUB);
+
+        ViewMessageRequestHeader viewMessageHeader = new ViewMessageRequestHeader();
+        viewMessageHeader.setTopic("viewTopic");
+        viewMessageHeader.setOffset(0L);
+        result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.VIEW_MESSAGE_BY_ID, viewMessageHeader, null));
+        assertResourceOrder(result, "Topic:viewTopic");
+        assertActions(result, "Topic:viewTopic", Action.GET);
 
         BatchAck firstAck = batchAck("topicA", "groupA", "0");
         BatchAck duplicateAck = batchAck("topicA", "groupA", "0");
@@ -820,6 +922,16 @@ public class DefaultAuthorizationContextBuilderTest {
             () -> builder.build(channelHandlerContext,
                 remotingRequest(RequestCode.LITE_PULL_MESSAGE, litePullHeader, null)));
 
+        PullMessageRequestHeader mismatchedRetryHeader = new PullMessageRequestHeader();
+        mismatchedRetryHeader.setTopic("%RETRY%ownerGroup");
+        mismatchedRetryHeader.setConsumerGroup("otherGroup");
+        Assert.assertThrows(AuthorizationException.class,
+            () -> builder.build(channelHandlerContext,
+                remotingRequest(RequestCode.PULL_MESSAGE, mismatchedRetryHeader, null)));
+        Assert.assertThrows(AuthorizationException.class,
+            () -> builder.build(channelHandlerContext,
+                remotingRequest(RequestCode.LITE_PULL_MESSAGE, mismatchedRetryHeader, null)));
+
         SendMessageRequestHeader replyHeader = new SendMessageRequestHeader();
         replyHeader.setProducerGroup("producerOnly");
         Assert.assertThrows(AuthorizationException.class,
@@ -909,8 +1021,22 @@ public class DefaultAuthorizationContextBuilderTest {
         EndTransactionRequestHeader endTransactionHeader = new EndTransactionRequestHeader();
         endTransactionHeader.setProducerGroup("producerOnly");
         RemotingCommand request = remotingRequest(RequestCode.END_TRANSACTION, endTransactionHeader, null);
-        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext, request);
-        Assert.assertTrue(result.isEmpty());
+        Assert.assertThrows(AuthorizationException.class,
+            () -> builder.build(channelHandlerContext, request));
+        endTransactionHeader.setTopic(" ");
+        Assert.assertThrows(AuthorizationException.class,
+            () -> builder.build(channelHandlerContext,
+                remotingRequest(RequestCode.END_TRANSACTION, endTransactionHeader, null)));
+
+        ViewMessageRequestHeader viewMessageHeader = new ViewMessageRequestHeader();
+        viewMessageHeader.setOffset(0L);
+        Assert.assertThrows(AuthorizationException.class,
+            () -> builder.build(channelHandlerContext,
+                remotingRequest(RequestCode.VIEW_MESSAGE_BY_ID, viewMessageHeader, null)));
+        viewMessageHeader.setTopic(" ");
+        Assert.assertThrows(AuthorizationException.class,
+            () -> builder.build(channelHandlerContext,
+                remotingRequest(RequestCode.VIEW_MESSAGE_BY_ID, viewMessageHeader, null)));
     }
 
     @Test

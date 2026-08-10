@@ -66,6 +66,7 @@ import org.apache.rocketmq.common.resource.ResourcePattern;
 import org.apache.rocketmq.common.resource.ResourceType;
 import org.apache.rocketmq.common.resource.RocketMQResource;
 import org.apache.rocketmq.remoting.CommandCustomHeader;
+import org.apache.rocketmq.remoting.annotation.CFNotNull;
 import org.apache.rocketmq.remoting.common.RemotingHelper;
 import org.apache.rocketmq.remoting.protocol.NamespaceUtil;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
@@ -127,15 +128,11 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
         }
         if (message instanceof HeartbeatRequest) {
             HeartbeatRequest request = (HeartbeatRequest) message;
-            boolean isUnspecifiedConsumer = request.getClientType() == ClientType.CLIENT_TYPE_UNSPECIFIED
-                && StringUtils.isNotBlank(request.getGroup().getName());
-            if (isConsumerClientType(request.getClientType())
-                || isUnspecifiedConsumer) {
+            if (StringUtils.isNotBlank(request.getGroup().getName())) {
+                if (request.getClientType() == ClientType.PRODUCER) {
+                    throw new AuthorizationException("group is not allowed for producer heartbeat.");
+                }
                 result = newGroupSubContexts(metadata, request.getGroup());
-            } else if (StringUtils.isNotBlank(request.getGroup().getName())) {
-                throw new AuthorizationException("group is not allowed for producer heartbeat.");
-            } else {
-                return null;
             }
         }
         if (message instanceof ReceiveMessageRequest) {
@@ -203,30 +200,33 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
             Resource group;
             switch (command.getCode()) {
                 case RequestCode.GET_ROUTEINFO_BY_TOPIC:
-                    if (NamespaceUtil.isRetryTopic(fields.get(TOPIC))) {
-                        group = Resource.ofGroup(fields.get(TOPIC));
+                    String routeTopic = requireResource(fields.get(TOPIC), "topic");
+                    if (NamespaceUtil.isRetryTopic(routeTopic)) {
+                        group = Resource.ofGroup(routeTopic);
                         result.add(DefaultAuthorizationContext.of(subject, group, Arrays.asList(Action.SUB, Action.GET), sourceIp));
                     } else {
-                        topic = Resource.ofTopic(fields.get(TOPIC));
+                        topic = Resource.ofTopic(routeTopic);
                         result.add(DefaultAuthorizationContext.of(subject, topic, Arrays.asList(Action.PUB, Action.SUB, Action.GET), sourceIp));
                     }
                     break;
                 case RequestCode.SEND_MESSAGE:
-                    if (NamespaceUtil.isRetryTopic(fields.get(TOPIC))) {
-                        group = Resource.ofGroup(fields.get(TOPIC));
+                    String sendTopic = requireResource(fields.get(TOPIC), "topic");
+                    if (NamespaceUtil.isRetryTopic(sendTopic)) {
+                        group = Resource.ofGroup(sendTopic);
                         result.add(DefaultAuthorizationContext.of(subject, group, Action.SUB, sourceIp));
                     } else {
-                        topic = Resource.ofTopic(fields.get(TOPIC));
+                        topic = Resource.ofTopic(sendTopic);
                         result.add(DefaultAuthorizationContext.of(subject, topic, Action.PUB, sourceIp));
                     }
                     break;
                 case RequestCode.SEND_MESSAGE_V2:
                 case RequestCode.SEND_BATCH_MESSAGE:
-                    if (NamespaceUtil.isRetryTopic(fields.get(B))) {
-                        group = Resource.ofGroup(fields.get(B));
+                    String compactSendTopic = requireResource(fields.get(B), "topic");
+                    if (NamespaceUtil.isRetryTopic(compactSendTopic)) {
+                        group = Resource.ofGroup(compactSendTopic);
                         result.add(DefaultAuthorizationContext.of(subject, group, Action.SUB, sourceIp));
                     } else {
-                        topic = Resource.ofTopic(fields.get(B));
+                        topic = Resource.ofTopic(compactSendTopic);
                         result.add(DefaultAuthorizationContext.of(subject, topic, Action.PUB, sourceIp));
                     }
                     break;
@@ -239,25 +239,30 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                     result.add(DefaultAuthorizationContext.of(subject, topic, Action.PUB, sourceIp));
                     break;
                 case RequestCode.RECALL_MESSAGE:
-                    topic = Resource.ofTopic(fields.get(TOPIC));
+                    topic = Resource.ofTopic(requireResource(fields.get(TOPIC), "topic"));
                     result.add(DefaultAuthorizationContext.of(subject, topic, Action.PUB, sourceIp));
                     break;
                 case RequestCode.END_TRANSACTION:
-                    if (StringUtils.isNotBlank(fields.get(TOPIC))) {
-                        topic = Resource.ofTopic(fields.get(TOPIC));
-                        result.add(DefaultAuthorizationContext.of(subject, topic, Action.PUB, sourceIp));
-                    }
+                    topic = Resource.ofTopic(requireResource(fields.get(TOPIC), "topic"));
+                    result.add(DefaultAuthorizationContext.of(subject, topic, Action.PUB, sourceIp));
+                    break;
+                case RequestCode.VIEW_MESSAGE_BY_ID:
+                    topic = Resource.ofTopic(requireResource(fields.get(TOPIC), "topic"));
+                    result.add(DefaultAuthorizationContext.of(subject, topic, Action.GET, sourceIp));
                     break;
                 case RequestCode.CONSUMER_SEND_MSG_BACK:
-                    group = Resource.ofGroup(fields.get(GROUP));
+                    group = Resource.ofGroup(requireResource(fields.get(GROUP), "consumer group"));
                     result.add(DefaultAuthorizationContext.of(subject, group, Action.SUB, sourceIp));
                     break;
                 case RequestCode.PULL_MESSAGE:
                 case RequestCode.LITE_PULL_MESSAGE:
                     String pullTopic = requireResource(fields.get(TOPIC), "topic");
                     String pullGroup = requireResource(fields.get(CONSUMER_GROUP), "consumer group");
-                    if (command.getCode() == RequestCode.LITE_PULL_MESSAGE
-                        || !NamespaceUtil.isRetryTopic(pullTopic)) {
+                    if (NamespaceUtil.isRetryTopic(pullTopic)) {
+                        if (!StringUtils.equals(pullTopic, MixAll.getRetryTopic(pullGroup))) {
+                            throw new AuthorizationException("retry topic does not match consumer group.");
+                        }
+                    } else {
                         topic = Resource.ofTopic(pullTopic);
                         result.add(DefaultAuthorizationContext.of(subject, topic, Action.SUB, sourceIp));
                     }
@@ -318,7 +323,7 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                         Action.SUB, sourceIp));
                     break;
                 case RequestCode.QUERY_MESSAGE:
-                    topic = Resource.ofTopic(fields.get(TOPIC));
+                    topic = Resource.ofTopic(requireResource(fields.get(TOPIC), "topic"));
                     result.add(DefaultAuthorizationContext.of(subject, topic, Arrays.asList(Action.SUB, Action.GET), sourceIp));
                     break;
                 case RequestCode.HEART_BEAT:
@@ -354,53 +359,66 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                 case RequestCode.GET_CONSUMER_LIST_BY_GROUP:
                     final GetConsumerListByGroupRequestHeader getConsumerListByGroupRequestHeader =
                         command.decodeCommandCustomHeader(GetConsumerListByGroupRequestHeader.class);
-                    group = Resource.ofGroup(getConsumerListByGroupRequestHeader.getConsumerGroup());
+                    group = Resource.ofGroup(requireResource(
+                        getConsumerListByGroupRequestHeader.getConsumerGroup(), "consumer group"));
                     result.add(DefaultAuthorizationContext.of(subject, group, Arrays.asList(Action.SUB, Action.GET), sourceIp));
                     break;
                 case RequestCode.QUERY_CONSUMER_OFFSET:
                     final QueryConsumerOffsetRequestHeader queryConsumerOffsetRequestHeader =
                         command.decodeCommandCustomHeader(QueryConsumerOffsetRequestHeader.class);
-                    if (!NamespaceUtil.isRetryTopic(queryConsumerOffsetRequestHeader.getTopic())) {
-                        topic = Resource.ofTopic(queryConsumerOffsetRequestHeader.getTopic());
+                    String queryOffsetTopic = requireResource(
+                        queryConsumerOffsetRequestHeader.getTopic(), "topic");
+                    String queryOffsetGroup = requireResource(
+                        queryConsumerOffsetRequestHeader.getConsumerGroup(), "consumer group");
+                    if (!NamespaceUtil.isRetryTopic(queryOffsetTopic)) {
+                        topic = Resource.ofTopic(queryOffsetTopic);
                         result.add(DefaultAuthorizationContext.of(subject, topic, Arrays.asList(Action.SUB, Action.GET), sourceIp));
                     }
-                    group = Resource.ofGroup(queryConsumerOffsetRequestHeader.getConsumerGroup());
+                    group = Resource.ofGroup(queryOffsetGroup);
                     result.add(DefaultAuthorizationContext.of(subject, group, Arrays.asList(Action.SUB, Action.GET), sourceIp));
                     break;
                 case RequestCode.UPDATE_CONSUMER_OFFSET:
                     final UpdateConsumerOffsetRequestHeader updateConsumerOffsetRequestHeader =
                         command.decodeCommandCustomHeader(UpdateConsumerOffsetRequestHeader.class);
-                    if (!NamespaceUtil.isRetryTopic(updateConsumerOffsetRequestHeader.getTopic())) {
-                        topic = Resource.ofTopic(updateConsumerOffsetRequestHeader.getTopic());
+                    String updateOffsetTopic = requireResource(
+                        updateConsumerOffsetRequestHeader.getTopic(), "topic");
+                    String updateOffsetGroup = requireResource(
+                        updateConsumerOffsetRequestHeader.getConsumerGroup(), "consumer group");
+                    if (!NamespaceUtil.isRetryTopic(updateOffsetTopic)) {
+                        topic = Resource.ofTopic(updateOffsetTopic);
                         result.add(DefaultAuthorizationContext.of(subject, topic, Arrays.asList(Action.SUB, Action.UPDATE), sourceIp));
                     }
-                    group = Resource.ofGroup(updateConsumerOffsetRequestHeader.getConsumerGroup());
+                    group = Resource.ofGroup(updateOffsetGroup);
                     result.add(DefaultAuthorizationContext.of(subject, group, Arrays.asList(Action.SUB, Action.UPDATE), sourceIp));
                     break;
                 case RequestCode.LOCK_BATCH_MQ:
                     LockBatchRequestBody lockBatchRequestBody = LockBatchRequestBody.decode(command.getBody(), LockBatchRequestBody.class);
-                    group = Resource.ofGroup(lockBatchRequestBody.getConsumerGroup());
+                    group = Resource.ofGroup(requireResource(
+                        lockBatchRequestBody.getConsumerGroup(), "consumer group"));
                     result.add(DefaultAuthorizationContext.of(subject, group, Action.SUB, sourceIp));
                     if (CollectionUtils.isNotEmpty(lockBatchRequestBody.getMqSet())) {
                         for (MessageQueue messageQueue : lockBatchRequestBody.getMqSet()) {
-                            if (NamespaceUtil.isRetryTopic(messageQueue.getTopic())) {
+                            String lockTopic = requireResource(messageQueue.getTopic(), "topic");
+                            if (NamespaceUtil.isRetryTopic(lockTopic)) {
                                 continue;
                             }
-                            topic = Resource.ofTopic(messageQueue.getTopic());
+                            topic = Resource.ofTopic(lockTopic);
                             result.add(DefaultAuthorizationContext.of(subject, topic, Action.SUB, sourceIp));
                         }
                     }
                     break;
                 case RequestCode.UNLOCK_BATCH_MQ:
                     UnlockBatchRequestBody unlockBatchRequestBody = LockBatchRequestBody.decode(command.getBody(), UnlockBatchRequestBody.class);
-                    group = Resource.ofGroup(unlockBatchRequestBody.getConsumerGroup());
+                    group = Resource.ofGroup(requireResource(
+                        unlockBatchRequestBody.getConsumerGroup(), "consumer group"));
                     result.add(DefaultAuthorizationContext.of(subject, group, Action.SUB, sourceIp));
                     if (CollectionUtils.isNotEmpty(unlockBatchRequestBody.getMqSet())) {
                         for (MessageQueue messageQueue : unlockBatchRequestBody.getMqSet()) {
-                            if (NamespaceUtil.isRetryTopic(messageQueue.getTopic())) {
+                            String unlockTopic = requireResource(messageQueue.getTopic(), "topic");
+                            if (NamespaceUtil.isRetryTopic(unlockTopic)) {
                                 continue;
                             }
-                            topic = Resource.ofTopic(messageQueue.getTopic());
+                            topic = Resource.ofTopic(unlockTopic);
                             result.add(DefaultAuthorizationContext.of(subject, topic, Action.SUB, sourceIp));
                         }
                     }
@@ -602,15 +620,32 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                     String splitter = rocketMQResource.splitter();
                     Object value = field.get(header);
                     if (value == null) {
+                        if (field.getAnnotation(CFNotNull.class) != null) {
+                            throw new AuthorizationException(field.getName() + " is null.");
+                        }
+                        continue;
+                    }
+                    boolean resourceRequired = field.getAnnotation(CFNotNull.class) != null;
+                    String fieldValue = value.toString();
+                    if (StringUtils.isBlank(fieldValue)) {
+                        if (resourceRequired) {
+                            requireResource(fieldValue, field.getName());
+                        }
                         continue;
                     }
                     String[] resourceValues;
                     if (StringUtils.isNotBlank(splitter)) {
-                        resourceValues = StringUtils.split(value.toString(), splitter);
+                        resourceValues = StringUtils.split(fieldValue, splitter);
                     } else {
-                        resourceValues = new String[] {value.toString()};
+                        resourceValues = new String[] {fieldValue};
                     }
                     for (String resourceValue : resourceValues) {
+                        if (StringUtils.isBlank(resourceValue)) {
+                            if (resourceRequired) {
+                                requireResource(resourceValue, field.getName());
+                            }
+                            continue;
+                        }
                         if (resourceType == ResourceType.TOPIC && NamespaceUtil.isRetryTopic(resourceValue)) {
                             resource = Resource.ofGroup(resourceValue);
                             result.add(DefaultAuthorizationContext.of(subject, resource, Arrays.asList(actions), sourceIp));
@@ -669,11 +704,6 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
             }
         }
         return result;
-    }
-
-    private boolean isConsumerClientType(ClientType clientType) {
-        return Arrays.asList(ClientType.PUSH_CONSUMER, ClientType.SIMPLE_CONSUMER, ClientType.PULL_CONSUMER)
-            .contains(clientType);
     }
 
     private static List<DefaultAuthorizationContext> newPubContext(Metadata metadata, apache.rocketmq.v2.Resource topic) {
