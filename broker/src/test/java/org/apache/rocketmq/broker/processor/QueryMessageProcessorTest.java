@@ -153,6 +153,19 @@ public class QueryMessageProcessorTest {
     }
 
     @Test
+    public void testViewMessageByIdRejectsForgedRealTopicOnNormalMessage() throws Exception {
+        RemotingCommand request = createViewMessageRequest("allowedTopic");
+        SelectMappedBufferResult result = spy(messageResult("actualTopic", "allowedTopic"));
+        when(messageStore.selectOneMessageByOffset(0L)).thenReturn(result);
+
+        RemotingCommand response = queryMessageProcessor.processRequest(handlerContext, request);
+
+        Assert.assertEquals(ResponseCode.NO_PERMISSION, response.getCode());
+        verify(result).release();
+        verify(channel, never()).writeAndFlush(any());
+    }
+
+    @Test
     public void testViewMessageByIdRejectsUndecodableMessage() throws Exception {
         RemotingCommand request = createViewMessageRequest("topic");
         SelectMappedBufferResult result = spy(
