@@ -16,6 +16,9 @@
  */
 package org.apache.rocketmq.auth.config;
 
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
 
 public class AuthConfig implements Cloneable {
@@ -35,6 +38,8 @@ public class AuthConfig implements Cloneable {
     private String authenticationStrategy;
 
     private String authenticationWhitelist;
+
+    private transient volatile Set<String> authenticationWhiteSet = Collections.emptySet();
 
     private String initAuthenticationUser;
 
@@ -117,15 +122,7 @@ public class AuthConfig implements Cloneable {
         if (!authenticationEnabled) {
             return false;
         }
-        if (StringUtils.isBlank(authenticationWhitelist)) {
-            return true;
-        }
-        for (String whitelistEntry : StringUtils.split(authenticationWhitelist, ",")) {
-            if (StringUtils.equals(StringUtils.trim(whitelistEntry), rpcCode)) {
-                return false;
-            }
-        }
-        return true;
+        return !authenticationWhiteSet.contains(rpcCode);
     }
 
     public String getAuthenticationProvider() {
@@ -158,6 +155,15 @@ public class AuthConfig implements Cloneable {
 
     public void setAuthenticationWhitelist(String authenticationWhitelist) {
         this.authenticationWhitelist = authenticationWhitelist;
+        if (StringUtils.isBlank(authenticationWhitelist)) {
+            this.authenticationWhiteSet = Collections.emptySet();
+            return;
+        }
+        Set<String> whiteSet = new HashSet<>();
+        for (String rpcCode : StringUtils.split(authenticationWhitelist, ",")) {
+            whiteSet.add(StringUtils.trim(rpcCode));
+        }
+        this.authenticationWhiteSet = Collections.unmodifiableSet(whiteSet);
     }
 
     public String getInitAuthenticationUser() {
