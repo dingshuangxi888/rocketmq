@@ -62,6 +62,7 @@ import org.apache.rocketmq.common.action.Action;
 import org.apache.rocketmq.common.action.RocketMQAction;
 import org.apache.rocketmq.common.constant.CommonConstants;
 import org.apache.rocketmq.common.constant.GrpcConstants;
+import org.apache.rocketmq.common.lite.LiteSubscriptionDTO;
 import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.common.resource.ResourcePattern;
 import org.apache.rocketmq.common.resource.ResourceType;
@@ -81,6 +82,7 @@ import org.apache.rocketmq.remoting.protocol.body.CreateTopicListRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.DeleteSubscriptionGroupListRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.DeleteTopicListRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.LockBatchRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.LiteSubscriptionCtlRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.QueryAssignmentRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.SetMessageRequestModeRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.SubscriptionGroupList;
@@ -146,9 +148,6 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
         }
         if (message instanceof SyncLiteSubscriptionRequest) {
             SyncLiteSubscriptionRequest request = (SyncLiteSubscriptionRequest) message;
-            if (request.getLiteTopicSetCount() <= 0) {
-                return null;
-            }
             result = newSubContexts(metadata, request.getGroup(), request.getTopic());
         }
         if (message instanceof AckMessageRequest) {
@@ -167,7 +166,7 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
         }
         if (message instanceof ChangeInvisibleDurationRequest) {
             ChangeInvisibleDurationRequest request = (ChangeInvisibleDurationRequest) message;
-            result = newGroupSubContexts(metadata, request.getGroup());
+            result = newSubContexts(metadata, request.getGroup(), request.getTopic());
         }
         if (message instanceof QueryRouteRequest) {
             QueryRouteRequest request = (QueryRouteRequest) message;
@@ -437,6 +436,25 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                         }
                     }
                     break;
+                case RequestCode.LITE_SUBSCRIPTION_CTL:
+                    LiteSubscriptionCtlRequestBody liteSubscriptionBody = decodeRequiredBody(
+                        command, LiteSubscriptionCtlRequestBody.class, "lite subscription");
+                    if (CollectionUtils.isEmpty(liteSubscriptionBody.getSubscriptionSet())) {
+                        throw new AuthorizationException("lite subscription is empty.");
+                    }
+                    Set<String> liteSubscriptionResources = new LinkedHashSet<>();
+                    for (LiteSubscriptionDTO subscription : liteSubscriptionBody.getSubscriptionSet()) {
+                        if (subscription == null) {
+                            throw new AuthorizationException("lite subscription is null.");
+                        }
+                        addUniqueContext(result, liteSubscriptionResources, subject,
+                            Resource.ofGroup(requireResource(subscription.getGroup(), "consumer group")),
+                            Action.SUB, sourceIp);
+                        addUniqueContext(result, liteSubscriptionResources, subject,
+                            Resource.ofTopic(requireResource(subscription.getTopic(), "topic")),
+                            Action.SUB, sourceIp);
+                    }
+                    break;
                 case RequestCode.UPDATE_BROKER_CONFIG:
                     result.add(DefaultAuthorizationContext.of(subject,
                         Resource.ofCluster(authConfig.getClusterName()), Action.UPDATE, sourceIp));
@@ -525,6 +543,7 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                 case RequestCode.GET_ALL_DELAY_OFFSET:
                 case RequestCode.GET_BROKER_HA_STATUS:
                 case RequestCode.GET_BROKER_EPOCH_CACHE:
+                case RequestCode.GET_BROKER_LITE_INFO:
                     result.add(DefaultAuthorizationContext.of(subject,
                         Resource.ofCluster(authConfig.getClusterName()), Action.GET, sourceIp));
                     break;
@@ -550,40 +569,34 @@ public class DefaultAuthorizationContextBuilder implements AuthorizationContextB
                 case RequestCode.DELETE_EXPIRED_COMMITLOG:
                 case RequestCode.CLEAN_UNUSED_TOPIC:
                 case RequestCode.POP_ROLLBACK:
+                case RequestCode.SWITCH_TIMER_ENGINE:
                     result.add(DefaultAuthorizationContext.of(subject,
                         Resource.ofCluster(authConfig.getClusterName()), Action.UPDATE, sourceIp));
                     break;
                 case RequestCode.DELETE_TOPIC_IN_BROKER_LIST:
-                    // Batch APIs carry their target list in the request body, not in an annotated
-                    // CommandCustomHeader, so the annotation-based path in
-                    // RequestHeaderRegistry would otherwise produce an empty context list and let
-                    // the request through without a DELETE permission check. Decode the body and
-                    // emit one DELETE context per topic instead.
-                    DeleteTopicListRequestBody deleteTopicListRequestBody =
-                        DeleteTopicListRequestBody.decode(command.getBody(), DeleteTopicListRequestBody.class);
-                    if (CollectionUtils.isNotEmpty(deleteTopicListRequestBody.getTopicList())) {
-                        for (String topicName : deleteTopicListRequestBody.getTopicList()) {
-                            if (StringUtils.isBlank(topicName)) {
-                                continue;
-                            }
-                            topic = Resource.ofTopic(topicName);
-                            result.add(DefaultAuthorizationContext.of(subject, topic, Action.DELETE, sourceIp));
-                        }
+                    DeleteTopicListRequestBody deleteTopicListRequestBody = decodeRequiredBody(
+                        command, DeleteTopicListRequestBody.class, "topic list");
+                    if (CollectionUtils.isEmpty(deleteTopicListRequestBody.getTopicList())) {
+                        throw new AuthorizationException("topic list is empty.");
+                    }
+                    Set<String> deleteTopicResources = new LinkedHashSet<>();
+                    for (String topicName : deleteTopicListRequestBody.getTopicList()) {
+                        String requiredTopic = requireResource(topicName, "topic");
+                        Resource resource = NamespaceUtil.isRetryTopic(requiredTopic)
+                            ? Resource.ofGroup(requiredTopic) : Resource.ofTopic(requiredTopic);
+                        addUniqueContext(result, deleteTopicResources, subject, resource, Action.DELETE, sourceIp);
                     }
                     break;
                 case RequestCode.DELETE_SUBSCRIPTION_GROUP_LIST:
-                    // See DELETE_TOPIC_IN_BROKER_LIST: emit one DELETE context per group from the
-                    // request body so authorization can enforce per-group DELETE permission.
-                    DeleteSubscriptionGroupListRequestBody deleteGroupListRequestBody =
-                        DeleteSubscriptionGroupListRequestBody.decode(command.getBody(), DeleteSubscriptionGroupListRequestBody.class);
-                    if (CollectionUtils.isNotEmpty(deleteGroupListRequestBody.getGroupNameList())) {
-                        for (String groupName : deleteGroupListRequestBody.getGroupNameList()) {
-                            if (StringUtils.isBlank(groupName)) {
-                                continue;
-                            }
-                            group = Resource.ofGroup(groupName);
-                            result.add(DefaultAuthorizationContext.of(subject, group, Action.DELETE, sourceIp));
-                        }
+                    DeleteSubscriptionGroupListRequestBody deleteGroupListRequestBody = decodeRequiredBody(
+                        command, DeleteSubscriptionGroupListRequestBody.class, "subscription group list");
+                    if (CollectionUtils.isEmpty(deleteGroupListRequestBody.getGroupNameList())) {
+                        throw new AuthorizationException("subscription group list is empty.");
+                    }
+                    Set<String> deleteGroupResources = new LinkedHashSet<>();
+                    for (String groupName : deleteGroupListRequestBody.getGroupNameList()) {
+                        group = Resource.ofGroup(requireResource(groupName, "consumer group"));
+                        addUniqueContext(result, deleteGroupResources, subject, group, Action.DELETE, sourceIp);
                     }
                     break;
                 default:

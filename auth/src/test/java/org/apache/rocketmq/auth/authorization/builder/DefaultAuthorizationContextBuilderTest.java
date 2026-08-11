@@ -35,6 +35,7 @@ import apache.rocketmq.v2.SendMessageRequest;
 import apache.rocketmq.v2.Settings;
 import apache.rocketmq.v2.Subscription;
 import apache.rocketmq.v2.SubscriptionEntry;
+import apache.rocketmq.v2.SyncLiteSubscriptionRequest;
 import apache.rocketmq.v2.TelemetryCommand;
 import com.alibaba.fastjson2.JSON;
 import com.google.common.collect.Sets;
@@ -59,6 +60,8 @@ import org.apache.rocketmq.common.TopicConfig;
 import org.apache.rocketmq.common.TopicFilterType;
 import org.apache.rocketmq.common.action.Action;
 import org.apache.rocketmq.common.constant.GrpcConstants;
+import org.apache.rocketmq.common.lite.LiteSubscriptionAction;
+import org.apache.rocketmq.common.lite.LiteSubscriptionDTO;
 import org.apache.rocketmq.common.resource.ResourcePattern;
 import org.apache.rocketmq.common.resource.ResourceType;
 import org.apache.rocketmq.remoting.CommandCustomHeader;
@@ -74,6 +77,7 @@ import org.apache.rocketmq.remoting.protocol.body.CreateTopicListRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.DeleteSubscriptionGroupListRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.DeleteTopicListRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.LockBatchRequestBody;
+import org.apache.rocketmq.remoting.protocol.body.LiteSubscriptionCtlRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.QueryAssignmentRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.SetMessageRequestModeRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.SubscriptionGroupList;
@@ -83,9 +87,14 @@ import org.apache.rocketmq.remoting.protocol.header.CreateTopicRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.CreateUserRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.EndTransactionRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.GetConsumerListByGroupRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.GetLiteClientInfoRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.GetLiteGroupInfoRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.GetLiteTopicInfoRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.GetMaxOffsetRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.GetParentTopicInfoRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.HeartbeatRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopMessageRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.PopLiteMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PullMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.QueryConsumerOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.QueryMessageRequestHeader;
@@ -93,6 +102,7 @@ import org.apache.rocketmq.remoting.protocol.header.RecallMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.SearchOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.SendMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.SendMessageRequestHeaderV2;
+import org.apache.rocketmq.remoting.protocol.header.TriggerLiteDispatchRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.UnregisterClientRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.UpdateConsumerOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.ViewMessageRequestHeader;
@@ -235,12 +245,17 @@ public class DefaultAuthorizationContextBuilderTest {
 
         request = ChangeInvisibleDurationRequest.newBuilder()
             .setGroup(Resource.newBuilder().setName("group").build())
+            .setTopic(Resource.newBuilder().setName("topic").build())
+            .setLiteTopic("liteTopic")
             .build();
         result = builder.build(metadata, request);
-        Assert.assertEquals(1, result.size());
-        Assert.assertEquals(result.get(0).getSubject().getSubjectKey(), "User:rocketmq");
-        Assert.assertEquals(result.get(0).getResource().getResourceKey(), "Group:group");
-        Assert.assertTrue(result.get(0).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals(2, result.size());
+        Assert.assertEquals(getContext(result, ResourceType.GROUP).getSubject().getSubjectKey(), "User:rocketmq");
+        Assert.assertEquals(getContext(result, ResourceType.GROUP).getResource().getResourceKey(), "Group:group");
+        Assert.assertTrue(getContext(result, ResourceType.GROUP).getActions().containsAll(Arrays.asList(Action.SUB)));
+        Assert.assertEquals(getContext(result, ResourceType.TOPIC).getSubject().getSubjectKey(), "User:rocketmq");
+        Assert.assertEquals(getContext(result, ResourceType.TOPIC).getResource().getResourceKey(), "Topic:topic");
+        Assert.assertTrue(getContext(result, ResourceType.TOPIC).getActions().containsAll(Arrays.asList(Action.SUB)));
 
         request = QueryRouteRequest.newBuilder()
             .setTopic(Resource.newBuilder().setName("topic").build())
@@ -1242,7 +1257,8 @@ public class DefaultAuthorizationContextBuilderTest {
             RequestCode.GET_TIMER_CHECK_POINT,
             RequestCode.GET_ALL_DELAY_OFFSET,
             RequestCode.GET_BROKER_HA_STATUS,
-            RequestCode.GET_BROKER_EPOCH_CACHE
+            RequestCode.GET_BROKER_EPOCH_CACHE,
+            RequestCode.GET_BROKER_LITE_INFO
         };
         for (int requestCode : clusterGetCodes) {
             List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext,
@@ -1256,7 +1272,8 @@ public class DefaultAuthorizationContextBuilderTest {
             RequestCode.CLEAN_EXPIRED_CONSUMEQUEUE,
             RequestCode.DELETE_EXPIRED_COMMITLOG,
             RequestCode.CLEAN_UNUSED_TOPIC,
-            RequestCode.POP_ROLLBACK
+            RequestCode.POP_ROLLBACK,
+            RequestCode.SWITCH_TIMER_ENGINE
         };
         for (int requestCode : updateCodes) {
             List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext,
@@ -1267,16 +1284,99 @@ public class DefaultAuthorizationContextBuilderTest {
     }
 
     @Test
+    public void buildLiteHeaderRequests() {
+        mockRemotingChannel();
+
+        PopLiteMessageRequestHeader popHeader = new PopLiteMessageRequestHeader();
+        popHeader.setClientId("clientA");
+        popHeader.setConsumerGroup("groupA");
+        popHeader.setTopic("topicA");
+        popHeader.setMaxMsgNum(16);
+        popHeader.setInvisibleTime(3000);
+        popHeader.setPollTime(1000);
+        popHeader.setBornTime(System.currentTimeMillis());
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.POP_LITE_MESSAGE, popHeader, null));
+        assertResourceOrder(result, "Group:groupA", "Topic:topicA");
+        assertActions(result, "Group:groupA", Action.SUB);
+        assertActions(result, "Topic:topicA", Action.SUB);
+
+        GetParentTopicInfoRequestHeader parentTopicHeader = new GetParentTopicInfoRequestHeader();
+        parentTopicHeader.setTopic("topicA");
+        result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.GET_PARENT_TOPIC_INFO, parentTopicHeader, null));
+        assertResourceOrder(result, "Topic:topicA");
+        assertActions(result, "Topic:topicA", Action.GET);
+
+        GetLiteTopicInfoRequestHeader liteTopicHeader = new GetLiteTopicInfoRequestHeader();
+        liteTopicHeader.setParentTopic("topicA");
+        liteTopicHeader.setLiteTopic("liteTopicA");
+        result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.GET_LITE_TOPIC_INFO, liteTopicHeader, null));
+        assertResourceOrder(result, "Topic:topicA");
+        assertActions(result, "Topic:topicA", Action.GET);
+
+        GetLiteClientInfoRequestHeader clientInfoHeader = new GetLiteClientInfoRequestHeader();
+        clientInfoHeader.setParentTopic("topicA");
+        clientInfoHeader.setGroup("groupA");
+        clientInfoHeader.setClientId("clientA");
+        result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.GET_LITE_CLIENT_INFO, clientInfoHeader, null));
+        assertResourceOrder(result, "Topic:topicA", "Group:groupA");
+        assertActions(result, "Topic:topicA", Action.GET);
+        assertActions(result, "Group:groupA", Action.GET);
+
+        GetLiteGroupInfoRequestHeader groupInfoHeader = new GetLiteGroupInfoRequestHeader();
+        groupInfoHeader.setGroup("groupA");
+        result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.GET_LITE_GROUP_INFO, groupInfoHeader, null));
+        assertResourceOrder(result, "Group:groupA");
+        assertActions(result, "Group:groupA", Action.GET);
+
+        TriggerLiteDispatchRequestHeader dispatchHeader = new TriggerLiteDispatchRequestHeader();
+        dispatchHeader.setGroup("groupA");
+        result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.TRIGGER_LITE_DISPATCH, dispatchHeader, null));
+        assertResourceOrder(result, "Group:groupA");
+        assertActions(result, "Group:groupA", Action.UPDATE);
+    }
+
+    @Test
+    public void buildLiteSubscriptionControlFromBody() {
+        mockRemotingChannel();
+
+        LiteSubscriptionDTO subscriptionA = new LiteSubscriptionDTO()
+            .setAction(LiteSubscriptionAction.PARTIAL_ADD)
+            .setClientId("clientA")
+            .setGroup("groupA")
+            .setTopic("topicA");
+        LiteSubscriptionDTO subscriptionB = new LiteSubscriptionDTO()
+            .setAction(LiteSubscriptionAction.COMPLETE_ADD)
+            .setClientId("clientB")
+            .setGroup("groupB")
+            .setTopic("topicA");
+        LiteSubscriptionCtlRequestBody requestBody = new LiteSubscriptionCtlRequestBody();
+        requestBody.setSubscriptionSet(new LinkedHashSet<>(Arrays.asList(subscriptionA, subscriptionB)));
+
+        List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.LITE_SUBSCRIPTION_CTL, null, requestBody.encode()));
+        assertResourceSet(result, "Group:groupA", "Topic:topicA", "Group:groupB");
+        assertActions(result, "Group:groupA", Action.SUB);
+        assertActions(result, "Topic:topicA", Action.SUB);
+        assertActions(result, "Group:groupB", Action.SUB);
+    }
+
+    @Test
     public void buildBatchDeleteRequests() {
         mockRemotingChannel();
 
         DeleteTopicListRequestBody topicListBody = new DeleteTopicListRequestBody();
-        topicListBody.setTopicList(Arrays.asList("topicA", "topicB", "", "  "));
+        topicListBody.setTopicList(Arrays.asList("topicA", "%RETRY%groupA", "topicA"));
         List<DefaultAuthorizationContext> result = builder.build(channelHandlerContext,
             remotingRequest(RequestCode.DELETE_TOPIC_IN_BROKER_LIST, null, topicListBody.encode()));
-        assertResourceOrder(result, "Topic:topicA", "Topic:topicB");
+        assertResourceOrder(result, "Topic:topicA", "Group:groupA");
         assertActions(result, "Topic:topicA", Action.DELETE);
-        assertActions(result, "Topic:topicB", Action.DELETE);
+        assertActions(result, "Group:groupA", Action.DELETE);
         for (DefaultAuthorizationContext context : result) {
             Assert.assertEquals(String.valueOf(RequestCode.DELETE_TOPIC_IN_BROKER_LIST), context.getRpcCode());
         }
@@ -1291,6 +1391,43 @@ public class DefaultAuthorizationContextBuilderTest {
         for (DefaultAuthorizationContext context : result) {
             Assert.assertEquals(String.valueOf(RequestCode.DELETE_SUBSCRIPTION_GROUP_LIST), context.getRpcCode());
         }
+    }
+
+    @Test
+    public void rejectMalformedBodyDrivenRequests() {
+        mockRemotingChannel();
+
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.LITE_SUBSCRIPTION_CTL, null, null)));
+
+        LiteSubscriptionCtlRequestBody emptySubscriptionBody = new LiteSubscriptionCtlRequestBody();
+        emptySubscriptionBody.setSubscriptionSet(Collections.emptySet());
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.LITE_SUBSCRIPTION_CTL, null, emptySubscriptionBody.encode())));
+
+        LiteSubscriptionDTO invalidSubscription = new LiteSubscriptionDTO()
+            .setAction(LiteSubscriptionAction.PARTIAL_ADD)
+            .setClientId("clientA")
+            .setGroup(" ")
+            .setTopic("topicA");
+        LiteSubscriptionCtlRequestBody invalidSubscriptionBody = new LiteSubscriptionCtlRequestBody();
+        invalidSubscriptionBody.setSubscriptionSet(Collections.singleton(invalidSubscription));
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.LITE_SUBSCRIPTION_CTL, null, invalidSubscriptionBody.encode())));
+
+        DeleteTopicListRequestBody emptyTopicList = new DeleteTopicListRequestBody(Collections.emptyList());
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.DELETE_TOPIC_IN_BROKER_LIST, null, emptyTopicList.encode())));
+
+        DeleteTopicListRequestBody invalidTopicList = new DeleteTopicListRequestBody(
+            Arrays.asList("topicA", " "));
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.DELETE_TOPIC_IN_BROKER_LIST, null, invalidTopicList.encode())));
+
+        DeleteSubscriptionGroupListRequestBody invalidGroupList =
+            new DeleteSubscriptionGroupListRequestBody(Arrays.asList("groupA", " "));
+        Assert.assertThrows(AuthorizationException.class, () -> builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.DELETE_SUBSCRIPTION_GROUP_LIST, null, invalidGroupList.encode())));
     }
 
     @Test
@@ -1318,6 +1455,35 @@ public class DefaultAuthorizationContextBuilderTest {
                 .setClientType(ClientType.PRODUCER)
                 .setGroup(Resource.newBuilder().setName("mustNotBecomeGroup"))
                 .build()));
+    }
+
+    @Test
+    public void buildGrpcLiteSubscriptionIgnoresLiteTopics() {
+        Metadata metadata = new Metadata();
+        metadata.put(GrpcConstants.AUTHORIZATION_AK, "rocketmq");
+        metadata.put(GrpcConstants.REMOTE_ADDRESS, "192.168.0.1");
+        metadata.put(GrpcConstants.CHANNEL_ID, "channel-id");
+
+        SyncLiteSubscriptionRequest emptyLiteTopics = SyncLiteSubscriptionRequest.newBuilder()
+            .setAction(apache.rocketmq.v2.LiteSubscriptionAction.COMPLETE_REMOVE)
+            .setTopic(Resource.newBuilder().setName("parentTopic"))
+            .setGroup(Resource.newBuilder().setName("group"))
+            .build();
+        List<DefaultAuthorizationContext> result = builder.build(metadata, emptyLiteTopics);
+        assertResourceOrder(result, "Group:group", "Topic:parentTopic");
+        assertActions(result, "Group:group", Action.SUB);
+        assertActions(result, "Topic:parentTopic", Action.SUB);
+
+        SyncLiteSubscriptionRequest withLiteTopics = SyncLiteSubscriptionRequest.newBuilder()
+            .setAction(apache.rocketmq.v2.LiteSubscriptionAction.PARTIAL_ADD)
+            .setTopic(Resource.newBuilder().setName("parentTopic"))
+            .setGroup(Resource.newBuilder().setName("group"))
+            .addLiteTopicSet("liteTopic")
+            .build();
+        result = builder.build(metadata, withLiteTopics);
+        assertResourceOrder(result, "Group:group", "Topic:parentTopic");
+        assertActions(result, "Group:group", Action.SUB);
+        assertActions(result, "Topic:parentTopic", Action.SUB);
     }
 
     private BatchAck batchAck(String topic, String group, String retry) {
