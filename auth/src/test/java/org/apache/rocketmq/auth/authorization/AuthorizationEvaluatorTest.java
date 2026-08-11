@@ -504,10 +504,8 @@ public class AuthorizationEvaluatorTest {
             () -> requestEvaluator.evaluate(unregister("producerGroup", "consumerGroup"),
                 Collections.emptyList()));
 
-        Assert.assertThrows(AuthorizationException.class,
-            () -> requestEvaluator.evaluate(endTransaction(true), Collections.emptyList()));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> requestEvaluator.evaluate(endTransaction(false), Collections.emptyList()));
+        requestEvaluator.evaluate(endTransaction(true), Collections.emptyList());
+        requestEvaluator.evaluate(endTransaction(false), Collections.emptyList());
         Assert.assertThrows(AuthorizationException.class,
             () -> requestEvaluator.evaluate(
                 RemotingCommand.createRequestCommand(RequestCode.END_TRANSACTION, null),
@@ -516,27 +514,18 @@ public class AuthorizationEvaluatorTest {
             () -> requestEvaluator.evaluate(endTransaction(
                 "topic", 1L, 2L, MessageSysFlag.TRANSACTION_COMMIT_TYPE, "messageId"),
                 Collections.emptyList()));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> requestEvaluator.evaluate(endTransaction(
-                null, -1L, 2L, MessageSysFlag.TRANSACTION_COMMIT_TYPE, "messageId"),
-                Collections.emptyList()));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> requestEvaluator.evaluate(endTransaction(
-                null, 1L, -1L, MessageSysFlag.TRANSACTION_COMMIT_TYPE, "messageId"),
-                Collections.emptyList()));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> requestEvaluator.evaluate(endTransaction(
-                null, 1L, 2L, 99, "messageId"), Collections.emptyList()));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> requestEvaluator.evaluate(endTransaction(
-                null, 1L, 2L, null, "messageId"), Collections.emptyList()));
+        requestEvaluator.evaluate(endTransaction(
+            null, -1L, 2L, MessageSysFlag.TRANSACTION_COMMIT_TYPE, "messageId"), Collections.emptyList());
+        requestEvaluator.evaluate(endTransaction(
+            null, 1L, -1L, MessageSysFlag.TRANSACTION_COMMIT_TYPE, "messageId"), Collections.emptyList());
+        requestEvaluator.evaluate(endTransaction(
+            null, 1L, 2L, 99, "messageId"), Collections.emptyList());
+        requestEvaluator.evaluate(endTransaction(
+            null, 1L, 2L, null, "messageId"), Collections.emptyList());
 
-        Assert.assertThrows(AuthorizationException.class,
-            () -> requestEvaluator.evaluate(viewMessage(0L), Collections.emptyList()));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> requestEvaluator.evaluate(viewMessage(-1L), Collections.emptyList()));
-        Assert.assertThrows(AuthorizationException.class,
-            () -> requestEvaluator.evaluate(viewMessage(null), Collections.emptyList()));
+        requestEvaluator.evaluate(viewMessage(0L), Collections.emptyList());
+        requestEvaluator.evaluate(viewMessage(-1L), Collections.emptyList());
+        requestEvaluator.evaluate(viewMessage(null), Collections.emptyList());
         Assert.assertThrows(AuthorizationException.class,
             () -> requestEvaluator.evaluate(
                 RemotingCommand.createRequestCommand(RequestCode.VIEW_MESSAGE_BY_ID, null),

@@ -393,8 +393,7 @@ public class DefaultAuthorizationContextBuilderTest {
         request.addExtField("AccessKey", "rocketmq");
         request.makeCustomHeaderToNet();
         RemotingCommand endTransactionWithoutTopic = request;
-        Assert.assertThrows(AuthorizationException.class,
-            () -> builder.build(channelHandlerContext, endTransactionWithoutTopic));
+        Assert.assertTrue(builder.build(channelHandlerContext, endTransactionWithoutTopic).isEmpty());
 
         ConsumerSendMsgBackRequestHeader consumerSendMsgBackRequestHeader = new ConsumerSendMsgBackRequestHeader();
         consumerSendMsgBackRequestHeader.setGroup("group");
@@ -1023,22 +1022,18 @@ public class DefaultAuthorizationContextBuilderTest {
         EndTransactionRequestHeader endTransactionHeader = new EndTransactionRequestHeader();
         endTransactionHeader.setProducerGroup("producerOnly");
         RemotingCommand request = remotingRequest(RequestCode.END_TRANSACTION, endTransactionHeader, null);
-        Assert.assertThrows(AuthorizationException.class,
-            () -> builder.build(channelHandlerContext, request));
+        Assert.assertTrue(builder.build(channelHandlerContext, request).isEmpty());
         endTransactionHeader.setTopic(" ");
-        Assert.assertThrows(AuthorizationException.class,
-            () -> builder.build(channelHandlerContext,
-                remotingRequest(RequestCode.END_TRANSACTION, endTransactionHeader, null)));
+        Assert.assertTrue(builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.END_TRANSACTION, endTransactionHeader, null)).isEmpty());
 
         ViewMessageRequestHeader viewMessageHeader = new ViewMessageRequestHeader();
         viewMessageHeader.setOffset(0L);
-        Assert.assertThrows(AuthorizationException.class,
-            () -> builder.build(channelHandlerContext,
-                remotingRequest(RequestCode.VIEW_MESSAGE_BY_ID, viewMessageHeader, null)));
+        Assert.assertTrue(builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.VIEW_MESSAGE_BY_ID, viewMessageHeader, null)).isEmpty());
         viewMessageHeader.setTopic(" ");
-        Assert.assertThrows(AuthorizationException.class,
-            () -> builder.build(channelHandlerContext,
-                remotingRequest(RequestCode.VIEW_MESSAGE_BY_ID, viewMessageHeader, null)));
+        Assert.assertTrue(builder.build(channelHandlerContext,
+            remotingRequest(RequestCode.VIEW_MESSAGE_BY_ID, viewMessageHeader, null)).isEmpty());
     }
 
     @Test

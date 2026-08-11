@@ -159,19 +159,21 @@ public class QueryMessageProcessor implements NettyRequestProcessor {
         final SelectMappedBufferResult selectMappedBufferResult =
             this.brokerController.getMessageStore().selectOneMessageByOffset(requestHeader.getOffset());
         if (selectMappedBufferResult != null) {
-            MessageExt message = MessageDecoder.decode(
-                selectMappedBufferResult.getByteBuffer().duplicate(), false, false);
-            if (message == null) {
-                selectMappedBufferResult.release();
-                response.setCode(ResponseCode.SYSTEM_ERROR);
-                response.setRemark("decode message by the offset failed");
-                return response;
-            }
-            if (!matchesRequestTopic(requestHeader.getTopic(), message)) {
-                selectMappedBufferResult.release();
-                response.setCode(ResponseCode.NO_PERMISSION);
-                response.setRemark("The topic does not match the message");
-                return response;
+            if (StringUtils.isNotBlank(requestHeader.getTopic())) {
+                MessageExt message = MessageDecoder.decode(
+                    selectMappedBufferResult.getByteBuffer().duplicate(), false, false);
+                if (message == null) {
+                    selectMappedBufferResult.release();
+                    response.setCode(ResponseCode.SYSTEM_ERROR);
+                    response.setRemark("decode message by the offset failed");
+                    return response;
+                }
+                if (!matchesRequestTopic(requestHeader.getTopic(), message)) {
+                    selectMappedBufferResult.release();
+                    response.setCode(ResponseCode.NO_PERMISSION);
+                    response.setRemark("The topic does not match the message");
+                    return response;
+                }
             }
             response.setCode(ResponseCode.SUCCESS);
             response.setRemark(null);

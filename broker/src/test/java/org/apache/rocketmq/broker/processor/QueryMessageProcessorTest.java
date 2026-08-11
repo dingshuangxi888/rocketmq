@@ -126,16 +126,19 @@ public class QueryMessageProcessorTest {
     }
 
     @Test
-    public void testViewMessageByIdRequiresTopic() throws Exception {
+    public void testViewMessageByIdAllowsMissingTopicForCompatibility() throws Exception {
         ViewMessageRequestHeader header = new ViewMessageRequestHeader();
         header.setOffset(0L);
         RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.VIEW_MESSAGE_BY_ID, header);
         request.makeCustomHeaderToNet();
+        when(messageStore.selectOneMessageByOffset(0L)).thenReturn(
+            new SelectMappedBufferResult(0L, ByteBuffer.allocate(Integer.BYTES), Integer.BYTES, null));
 
-        Assert.assertThrows(RemotingCommandException.class,
-            () -> queryMessageProcessor.processRequest(handlerContext, request));
-        verify(messageStore, never()).selectOneMessageByOffset(anyLong());
-        verify(channel, never()).writeAndFlush(any());
+        RemotingCommand response = queryMessageProcessor.processRequest(handlerContext, request);
+
+        Assert.assertNull(response);
+        verify(messageStore).selectOneMessageByOffset(0L);
+        verify(channel).writeAndFlush(any());
     }
 
     @Test

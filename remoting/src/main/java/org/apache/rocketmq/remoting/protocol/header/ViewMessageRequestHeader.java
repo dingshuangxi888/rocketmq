@@ -31,7 +31,6 @@ import org.apache.rocketmq.remoting.protocol.RequestCode;
 
 @RocketMQAction(value = RequestCode.VIEW_MESSAGE_BY_ID, action = Action.GET)
 public class ViewMessageRequestHeader implements CommandCustomHeader {
-    @CFNotNull
     @RocketMQResource(ResourceType.TOPIC)
     private String topic;
     @CFNotNull
@@ -39,9 +38,6 @@ public class ViewMessageRequestHeader implements CommandCustomHeader {
 
     @Override
     public void checkFields() throws RemotingCommandException {
-        if (topic == null || topic.trim().isEmpty()) {
-            throw new RemotingCommandException("topic field is null or blank");
-        }
     }
 
     public String getTopic() {

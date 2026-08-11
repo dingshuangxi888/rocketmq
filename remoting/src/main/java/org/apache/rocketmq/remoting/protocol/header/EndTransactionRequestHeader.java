@@ -31,7 +31,6 @@ import org.apache.rocketmq.remoting.rpc.RpcRequestHeader;
 
 @RocketMQAction(value = RequestCode.END_TRANSACTION, action = Action.PUB)
 public class EndTransactionRequestHeader extends RpcRequestHeader {
-    @CFNotNull
     @RocketMQResource(ResourceType.TOPIC)
     private String topic;
     @CFNotNull
@@ -55,9 +54,6 @@ public class EndTransactionRequestHeader extends RpcRequestHeader {
 
     @Override
     public void checkFields() throws RemotingCommandException {
-        if (topic == null || topic.trim().isEmpty()) {
-            throw new RemotingCommandException("topic field is null or blank");
-        }
         if (MessageSysFlag.TRANSACTION_NOT_TYPE == this.commitOrRollback) {
             return;
         }

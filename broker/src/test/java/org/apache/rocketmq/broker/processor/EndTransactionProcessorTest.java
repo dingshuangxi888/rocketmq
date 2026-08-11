@@ -52,7 +52,6 @@ import org.mockito.junit.MockitoJUnitRunner;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
@@ -156,15 +155,21 @@ public class EndTransactionProcessorTest {
     }
 
     @Test
-    public void testProcessRequestRequiresTopic() {
+    public void testProcessRequestAllowsMissingTopicForCompatibility() throws RemotingCommandException {
+        when(transactionMsgService.commitMessage(any(EndTransactionRequestHeader.class)))
+            .thenReturn(createResponse(ResponseCode.SUCCESS));
+        when(messageStore.putMessage(any(MessageExtBrokerInner.class)))
+            .thenReturn(new PutMessageResult(PutMessageStatus.PUT_OK,
+                createAppendMessageResult(AppendMessageStatus.PUT_OK)));
         EndTransactionRequestHeader header = createEndTransactionRequestHeader(
             MessageSysFlag.TRANSACTION_COMMIT_TYPE, false);
         header.setTopic(null);
         RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.END_TRANSACTION, header);
         request.makeCustomHeaderToNet();
 
-        assertThatThrownBy(() -> endTransactionProcessor.processRequest(handlerContext, request))
-            .isInstanceOf(RemotingCommandException.class);
+        RemotingCommand response = endTransactionProcessor.processRequest(handlerContext, request);
+
+        assertThat(response.getCode()).isEqualTo(ResponseCode.SUCCESS);
     }
 
     private MessageExt createDefaultMessageExt() {
