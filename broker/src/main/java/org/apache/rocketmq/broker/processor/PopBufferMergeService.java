@@ -216,6 +216,13 @@ public class PopBufferMergeService extends ServiceThread {
         }
     }
 
+    private boolean isSubscriptionGroupNotExist(PopCheckPointWrapper pointWrapper) {
+        String group = pointWrapper.getCk().getCId();
+        return brokerController.getSubscriptionGroupManager()
+                .findSubscriptionGroupConfig(group) == null;
+    }
+
+
     private void scan() {
         long startTime = System.currentTimeMillis();
         AtomicInteger count = new AtomicInteger(0);
@@ -224,6 +231,19 @@ public class PopBufferMergeService extends ServiceThread {
         while (iterator.hasNext()) {
             Map.Entry<String, PopCheckPointWrapper> entry = iterator.next();
             PopCheckPointWrapper pointWrapper = entry.getValue();
+
+            // Skip invalid POP records when consumer group does not exist
+            if (isSubscriptionGroupNotExist(pointWrapper)) {
+                POP_LOGGER.warn(
+                        "[PopBuffer] skip pop record because consumer group not exist, group={}, ck={}",
+                        pointWrapper.getCk().getCId(),
+                        pointWrapper
+                );
+                iterator.remove();
+                counter.decrementAndGet();
+                continue;
+            }
+
 
             // just process offset(already stored at pull thread), or buffer ck(not stored and ack finish)
             if (pointWrapper.isJustOffset() && pointWrapper.isCkStored() || isCkDone(pointWrapper)
@@ -648,7 +668,7 @@ public class PopBufferMergeService extends ServiceThread {
         ackMsg.setPopTime(point.getPopTime());
         ackMsg.setBrokerName(point.getBrokerName());
         msgInner.setTopic(popMessageProcessor.getReviveTopic());
-        msgInner.setBody(JSON.toJSONString(ackMsg).getBytes(DataConverter.CHARSET_UTF8));
+        msgInner.setBody(JSON.toJSONBytes(ackMsg));
         msgInner.setQueueId(pointWrapper.getReviveQueueId());
         msgInner.setTags(PopAckConstants.ACK_TAG);
         msgInner.setBornTimestamp(System.currentTimeMillis());
@@ -704,7 +724,7 @@ public class PopBufferMergeService extends ServiceThread {
         batchAckMsg.setQueueId(point.getQueueId());
         batchAckMsg.setPopTime(point.getPopTime());
         msgInner.setTopic(popMessageProcessor.getReviveTopic());
-        msgInner.setBody(JSON.toJSONString(batchAckMsg).getBytes(DataConverter.CHARSET_UTF8));
+        msgInner.setBody(JSON.toJSONBytes(batchAckMsg));
         msgInner.setQueueId(pointWrapper.getReviveQueueId());
         msgInner.setTags(PopAckConstants.BATCH_ACK_TAG);
         msgInner.setBornTimestamp(System.currentTimeMillis());
