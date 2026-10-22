@@ -1,0 +1,290 @@
+Dear PMC,
+
+The security vulnerability report has been received by the Apache
+Security Team and is being passed to you for action.
+
+Please take careful note of the following:
+- This information is private and should be treated accordingly. The
+issue must not be discussed on a public mailing list, it must not be
+added to a public bug tracker, etc.
+- The PMC is responsible for resolving this issue. The security
+team is here to provide help and advice but the responsibility to do the
+work lies with the PMC.
+
+You may find the "ASF Project Security for Committers" [1] a useful
+reference. This e-mail represents step three of that process. Step 4
+should be completed asap.
+
+Regards,
+
+[1] http://www.apache.org/security/committers.html
+
+---------- Forwarded message ---------
+From: Isaac David <isaac@bugbunny.ai>
+Date: Sun, Apr 5, 2026 at 7:51 AM
+Subject: Proxy Cluster Mode Authorization Bypass via Uninitialized RequestHeaderRegistry
+To: Apache Security Team <security@apache.org>
+Cc: Arthur Gervais <arthur@bugbunny.ai>
+
+
+Proxy Cluster Mode Authorization Bypass via Uninitialized RequestHeaderRegistry
+Summary
+Apache RocketMQ's proxy component composes an AuthorizationPipeline on its remoting server but never calls RequestHeaderRegistry.getInstance().initialize() in cluster deployment mode. Because DefaultAuthorizationContextBuilder.buildContextByAnnotation() depends on the registry being populated to resolve @RocketMQAction-annotated header classes, it returns an empty context list for every request code that reaches the default branch of its switch statement. AuthorizationEvaluator.evaluate() silently passes on an empty list, bypassing all policy checks. Any authenticated low-privilege user connected to a proxy in cluster mode can consume messages from unauthorized topics (POP_MESSAGE), acknowledge and permanently delete those messages (ACK_MESSAGE), manipulate message visibility (CHANGE_MESSAGE_INVISIBLETIME), and enumerate consumer topology (GET_CONSUMER_CONNECTION_LIST) without holding the required ACL permissions.
+
+Severity
+High (CVSS 3.1: 8.3)
+
+CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:L
+
+Attack Vector: Network — the proxy's remoting port is network-accessible
+
+Attack Complexity: Low — no chaining required; a single well-formed request with valid low-privilege credentials suffices
+
+Privileges Required: Low — any valid credential accepted by the preceding AuthenticationPipeline is sufficient; no topic or group subscription ACL is needed
+
+User Interaction: None
+
+Scope: Unchanged — impact is confined to the proxy's security domain
+
+Confidentiality Impact: High — POP_MESSAGE grants read access to message payloads from any topic; GET_CONSUMER_CONNECTION_LIST exposes consumer group topology, client IDs, subscription tables, and network addresses for any group
+
+Integrity Impact: High — ACK_MESSAGE permanently deletes consumed messages from the queue; CHANGE_MESSAGE_INVISIBLETIME alters redelivery timing, causing message loss or delivery disruption for legitimate consumers
+
+Availability Impact: Low — consuming and acknowledging messages from under legitimate consumers can disrupt their processing, but does not directly crash or halt the proxy service
+
+Affected Component
+proxy/src/main/java/org/apache/rocketmq/proxy/remoting/RemotingProtocolServer.java — createRequestPipeline() (lines 295–306), registerRemotingServer() (lines 211–241)
+
+auth/src/main/java/org/apache/rocketmq/auth/authorization/builder/DefaultAuthorizationContextBuilder.java — buildContextByAnnotation() (lines 347–350), build() default branch (line 325)
+
+remoting/src/main/java/org/apache/rocketmq/remoting/protocol/RequestHeaderRegistry.java — initialize() (lines 39–47)
+
+broker/src/main/java/org/apache/rocketmq/broker/BrokerController.java — initialize() (line 1307) — the only place RequestHeaderRegistry.initialize() is ever called
+
+CWE
+CWE-862: Missing Authorization
+
+CWE-284: Improper Access Control
+
+Description
+RequestHeaderRegistry Is Never Initialized in Proxy Cluster Mode
+RequestHeaderRegistry is a singleton with an empty requestHeaderMap at construction time:
+
+// RequestHeaderRegistry.java:29-63
+public class RequestHeaderRegistry {
+    private final Map<Integer, Class<? extends CommandCustomHeader>> requestHeaderMap = new HashMap<>();
+    // map is empty until initialize() is called
+
+    public void initialize() {
+        Reflections reflections = new Reflections(new ConfigurationBuilder()
+            .setUrls(ClasspathHelper.forPackage(PACKAGE_NAME))
+            .setScanners(new SubTypesScanner(false)));
+        Set<Class<? extends CommandCustomHeader>> classes = reflections.getSubTypesOf(CommandCustomHeader.class);
+        classes.forEach(this::registerHeader);  // populates requestHeaderMap via @RocketMQAction scan
+    }
+
+    public Class<? extends CommandCustomHeader> getRequestHeader(int requestCode) {
+        return this.requestHeaderMap.get(requestCode);  // returns null if map is empty
+    }
+initialize() is called exactly once in the entire codebase — in BrokerController.initialize():
+
+// BrokerController.java:1307
+RequestHeaderRegistry.getInstance().initialize();
+In proxy cluster mode, ProxyStartup creates a ControllerManager or connects to an external controller, but does NOT instantiate a BrokerController. The BrokerController code path (which calls initialize()) is reached only in proxy local mode (embedded broker). In cluster mode — the standard production deployment — RequestHeaderRegistry.initialize() is never called and requestHeaderMap remains empty for the entire process lifetime.
+
+The Proxy Wires Auth Pipelines But Omits the Registry Initialization That Makes Them Work
+RemotingProtocolServer.createRequestPipeline() correctly composes authentication and authorization pipelines:
+
+// RemotingProtocolServer.java:295-306
+protected RequestPipeline createRequestPipeline() {
+    ...
+    pipeline = pipeline.pipe(new AuthorizationPipeline(authConfig, messagingProcessor))
+                       .pipe(new AuthenticationPipeline(authConfig, messagingProcessor));
+    return pipeline;
+}
+The proxy-specific AuthorizationPipeline delegates to AuthorizationFactory.newContexts(), which calls DefaultAuthorizationContextBuilder.build() — the same builder used by the broker. The broker works because it calls RequestHeaderRegistry.initialize() before any request is processed. The proxy cluster mode never does.
+
+buildContextByAnnotation() Returns Empty Without Registry Initialization
+DefaultAuthorizationContextBuilder.build() handles specific request codes with explicit switch cases (lines 194–324). For codes not listed — including POP_MESSAGE, ACK_MESSAGE, CHANGE_MESSAGE_INVISIBLETIME, GET_CONSUMER_CONNECTION_LIST, GET_MAX_OFFSET, GET_MIN_OFFSET, and SEARCH_OFFSET_BY_TIMESTAMP — control falls to the default branch:
+
+// DefaultAuthorizationContextBuilder.java:325-327
+default:
+    result = buildContextByAnnotation(subject, command, sourceIp);
+    break;
+buildContextByAnnotation() looks up the header class from the registry:
+
+// DefaultAuthorizationContextBuilder.java:347-350
+Class<? extends CommandCustomHeader> clazz =
+    this.requestHeaderRegistry.getRequestHeader(request.getCode());
+if (clazz == null) {
+    return result;  // returns empty ArrayList — no exception, no block
+}
+Because requestHeaderMap is empty (registry never initialized), getRequestHeader() returns null for every code including codes whose header classes carry correct @RocketMQAction annotations:
+
+Request Code
+
+Header Class
+
+Annotation
+
+POP_MESSAGE
+
+PopMessageRequestHeader
+
+@RocketMQAction(value = RequestCode.POP_MESSAGE, action = Action.SUB)
+
+ACK_MESSAGE
+
+AckMessageRequestHeader
+
+@RocketMQAction(value = RequestCode.ACK_MESSAGE, action = Action.SUB)
+
+CHANGE_MESSAGE_INVISIBLETIME
+
+ChangeInvisibleTimeRequestHeader
+
+@RocketMQAction(value = RequestCode.CHANGE_MESSAGE_INVISIBLETIME, action = Action.SUB)
+
+GET_CONSUMER_CONNECTION_LIST
+
+GetConsumerConnectionListRequestHeader
+
+@RocketMQAction(value = RequestCode.GET_CONSUMER_CONNECTION_LIST, action = Action.GET)
+
+GET_MAX_OFFSET
+
+GetMaxOffsetRequestHeader
+
+@RocketMQAction(value = RequestCode.GET_MAX_OFFSET, action = Action.GET)
+
+GET_MIN_OFFSET
+
+GetMinOffsetRequestHeader
+
+@RocketMQAction(value = RequestCode.GET_MIN_OFFSET, action = Action.GET)
+
+SEARCH_OFFSET_BY_TIMESTAMP
+
+SearchOffsetRequestHeader
+
+@RocketMQAction(value = RequestCode.SEARCH_OFFSET_BY_TIMESTAMP, action = Action.GET)
+
+All these annotations would be enforced if the registry were initialized. None are enforced in cluster mode.
+
+Fail-Open Design in AuthorizationEvaluator Completes the Bypass
+// AuthorizationEvaluator.java:39-44
+public void evaluate(List<AuthorizationContext> contexts) {
+    if (CollectionUtils.isEmpty(contexts)) {
+        return;  // NO exception — request proceeds unconditionally
+    }
+    contexts.forEach(this.authorizationStrategy::evaluate);
+}
+The empty list returned by buildContextByAnnotation() reaches evaluate(), which treats it as a signal to silently pass rather than deny — completing the bypass.
+
+Inconsistency With Broker Confirms the Gap
+The codebase's test for DefaultAuthorizationContextBuilder calls RequestHeaderRegistry.getInstance().initialize() explicitly at line 105 of DefaultAuthorizationContextBuilderTest.java, demonstrating that the test author understood initialization was required. The broker's production path (line 1307 of BrokerController.java) does the same. The proxy cluster startup path omits it.
+
+Full Execution Chain
+Attacker has valid low-privilege proxy credentials (any Normal-type user).
+
+Attacker sends POP_MESSAGE (or any other affected code) to the proxy's remoting port with credentials in extFields.
+
+AuthenticationPipeline runs — credentials are valid, passes.
+
+AuthorizationPipeline.execute() calls DefaultAuthorizationContextBuilder.build().
+
+extFields is non-empty (contains ACCESS_KEY) — early-return guard at line 182 is not triggered.
+
+command.getCode() matches no explicit switch case → default branch → buildContextByAnnotation().
+
+requestHeaderRegistry.getRequestHeader(code) returns null — registry never initialized.
+
+Empty ArrayList returned.
+
+AuthorizationEvaluator.evaluate([]) triggers early return — zero policy checks performed.
+
+Request dispatched to PullMessageActivity.popMessage() / ConsumerManagerActivity.getConsumerConnectionList() / etc.
+
+Handler executes against any topic or consumer group the attacker specifies, regardless of ACL rules.
+
+Proof of Concept
+# Prerequisites:
+# - RocketMQ proxy running in CLUSTER mode (standard production deployment)
+# - authenticationEnabled=true, authorizationEnabled=true in proxy config
+# - Target topic "sensitive-topic" has NO ACL granting lowuser any access
+
+# A) Create a low-privilege user (requires admin credentials)
+mqadmin createUser -n 127.0.0.1:9876 -b 127.0.0.1:10911 -u lowuser -p lowpass -t Normal
+
+# B) Switch tools.yml to use lowuser/lowpass credentials
+
+# C) Confirm a properly protected path is blocked for lowuser (SEND_MESSAGE has explicit switch case)
+mqadmin sendMessage -n 127.0.0.1:9876 -b <proxy-host>:10911 -t sensitive-topic -p "test"
+# Expected: AclException: No permission to access topic [sensitive-topic]
+
+# D) Exploit: POP_MESSAGE bypasses authorization in proxy cluster mode
+#    (Requires a client using the Remoting API directly — standard RocketMQ consumer SDK)
+# Equivalent to: DefaultMQPushConsumer group "lowuser-group" subscribing to "sensitive-topic"
+# and calling consumer.start() — the first POP_MESSAGE request succeeds and returns messages.
+
+# E) Exploit: GET_CONSUMER_CONNECTION_LIST leaks consumer topology
+mqadmin consumerConnection -n 127.0.0.1:9876 -b <proxy-host>:10911 -g <any-consumer-group>
+# Expected (vulnerable): returns full consumer connection list including client IDs, addresses,
+#   subscription tables, and consume-from-where settings for the target group
+# Expected (properly protected): AclException: No permission
+
+# F) Verify bypass is cluster-mode specific
+# When proxy is run in LOCAL mode (embedded broker), the same request is correctly blocked.
+Impact
+Unauthorized message consumption: Any authenticated low-privilege user can consume messages from topics they have no ACL grant for, exposing message payload content across the entire cluster.
+
+Message integrity loss: Consuming and acknowledging (ACK_MESSAGE) messages on behalf of another consumer causes those messages to be permanently deleted from the queue, disrupting legitimate consumers.
+
+Consumer disruption via visibility manipulation: CHANGE_MESSAGE_INVISIBLETIME allows an attacker to push messages already in-flight to reappear immediately or to be hidden for extended periods, causing duplicate processing or indefinite message suppression.
+
+Consumer topology reconnaissance: GET_CONSUMER_CONNECTION_LIST returns client IDs, network addresses, subscription tables, and consume-model settings for any named consumer group, providing detailed cluster topology information.
+
+Silent — no error returned: Because the bypass is a silent pass (no exception, no log entry in the authorization layer), there is no indication in proxy logs that authorization was skipped for these codes.
+
+Scope: Affects all proxy deployments in cluster mode when authorizationEnabled=true — which is specifically the configuration intended to enforce ACL controls.
+
+Recommended Remediation
+Option 1: Call RequestHeaderRegistry.initialize() in the proxy startup path (preferred — minimal change, fixes all affected codes)
+Add the initialization call in RemotingProtocolServer or the proxy's startup sequence, before any request is handled:
+
+// RemotingProtocolServer.java — init() or createRequestPipeline()
+private void initAuthComponents() {
+    if (authConfig != null && authConfig.isAuthorizationEnabled()) {
+        RequestHeaderRegistry.getInstance().initialize();
+    }
+    // ... create pipelines
+}
+This is the lowest-effort fix — one line, consistent with what BrokerController.initialize() does, and protects all current and future codes that rely on the annotation-driven path.
+
+Option 2: Move registry initialization into RequestHeaderRegistry.getInstance() (strongest fix — eliminates the initialization requirement)
+Make the registry self-initializing on first access:
+
+// RequestHeaderRegistry.java
+private static class RequestHeaderRegistryHolder {
+    private static final RequestHeaderRegistry INSTANCE = new RequestHeaderRegistry();
+    static {
+        INSTANCE.initialize();  // initialize at class-load time, before any caller can call getRequestHeader()
+    }
+}
+This eliminates the requirement for callers to remember to call initialize() and prevents any future startup path from reproducing the same omission.
+
+Option 3: Fail-Closed in AuthorizationEvaluator (defense-in-depth — fixes symptom for all callers)
+Change the empty-context branch to deny rather than pass:
+
+// AuthorizationEvaluator.java
+public void evaluate(List<AuthorizationContext> contexts) {
+    if (CollectionUtils.isEmpty(contexts)) {
+        throw new AuthorizationException(
+            "No authorization context resolved for request; access denied by default.");
+    }
+    contexts.forEach(this.authorizationStrategy::evaluate);
+}
+This is a defense-in-depth measure and should be applied alongside Option 1 or 2. On its own, it would block legitimate requests that intentionally resolve to an empty context (if any), so callers of the authorization pipeline for intentionally public/unauthenticated codes would need to be audited first.
+
+Credit
+This vulnerability was discovered and reported by bugbunny.ai.
